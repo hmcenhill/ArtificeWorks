@@ -2,9 +2,6 @@
 
 using OrderProcessing.Domain.Models;
 using OrderProcessing.Domain.Models.Materials;
-using OrderProcessing.Infrastructure.Persistence;
-
-using Testcontainers.PostgreSql;
 
 namespace OrderProcessing.IntegrationTests;
 
@@ -29,6 +26,7 @@ public class WorkOrderTests : IClassFixture<DatabaseFixture>
         workOrder.SetHold("Macho Man", "Oh no!");
         workOrder.ReleaseHold("Macho Man", "Oh yeah!");
 
+        // Act
         _fixture.Context.WorkOrders.Add(workOrder);
         await _fixture.Context.SaveChangesAsync();
 
@@ -45,35 +43,5 @@ public class WorkOrderTests : IClassFixture<DatabaseFixture>
         Assert.Equal(workOrder.StateHistory.First().Status, workOrderRetreived?.StateHistory.First().Status);
         Assert.Equal(workOrder.AssignedStock.Count, workOrderRetreived?.AssignedStock.Count);
         Assert.Equal(workOrder.AssignedStock.First().SerialNumber, workOrderRetreived?.AssignedStock.First().SerialNumber);
-    }
-}
-
-public class DatabaseFixture : IAsyncLifetime
-{
-    public PostgreSqlContainer Container { get; private set; } = null!;
-    public WorkOrderProcessingDbContext Context { get; private set; } = null!;
-
-    public async Task InitializeAsync()
-    {
-        Container = new PostgreSqlBuilder("postgres:15.1").Build();
-        await Container.StartAsync();
-
-        Context = await GetNewWorkOrderProcessingDbContext();
-        await Context.Database.MigrateAsync();
-    }
-
-    public async Task<WorkOrderProcessingDbContext> GetNewWorkOrderProcessingDbContext()
-    {
-        var options = new DbContextOptionsBuilder<WorkOrderProcessingDbContext>()
-            .UseNpgsql(Container.GetConnectionString())
-            .Options;
-
-        return new WorkOrderProcessingDbContext(options);
-    }
-
-    public async Task DisposeAsync()
-    {
-        await Context.DisposeAsync();
-        await Container.DisposeAsync();
     }
 }

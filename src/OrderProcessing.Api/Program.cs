@@ -1,6 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 
 using OrderProcessing.Api.Configuraion;
+using OrderProcessing.Application.Handlers;
+using OrderProcessing.Application.Interfaces;
+using OrderProcessing.Infrastructure.Data;
 using OrderProcessing.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -18,6 +21,12 @@ var connectionString = builder.Configuration.GetConnectionString("WorkOrderProce
 
 builder.Services.AddDbContext<WorkOrderProcessingDbContext>(options =>
     options.UseNpgsql(connectionString));
+
+builder.Services.AddScoped<IProductRepository, ProductRepository>();
+builder.Services.AddScoped<IWorkOrderRepository, WorkOrderRepository>();
+
+builder.Services.AddScoped<ProductHandler>();
+builder.Services.AddScoped<WorkOrderHandler>();
 
 var app = builder.Build();
 
