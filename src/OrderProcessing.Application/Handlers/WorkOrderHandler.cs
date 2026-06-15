@@ -17,6 +17,18 @@ public class WorkOrderHandler
         _productRepository = productRepository;
     }
 
+    public async Task<WorkOrderDto?> GetWorkOrder(Guid id)
+    {
+        var workOrder = await _workOrderRepository.Get(id);
+        return workOrder is null ? null : new WorkOrderDto(workOrder);
+    }
+
+    public async Task<WorkOrderHistoryDto?> GetWorkOrderHistory(Guid id)
+    {
+        var workOrder = await _workOrderRepository.GetWithHistory(id);
+        return workOrder is null ? null : new WorkOrderHistoryDto(workOrder);
+    }
+
     public async Task<CreateWorkOrderResponse> CreateWorkOrder(CreateWorkOrderRequest request)
     {
         var product = await _productRepository.Get(request.ItemId);

@@ -15,10 +15,20 @@ public class WorkOrderRepository : IWorkOrderRepository
         _context = context;
     }
 
-    public async Task<WorkOrder?> Get(string id)
+    public async Task<WorkOrder?> Get(Guid id)
     {
-        var workOrder = await _context.WorkOrders.FirstOrDefaultAsync(wo => wo.Id.ToString() == id);
-        return workOrder;
+        return await _context.WorkOrders
+            .Include(wo => wo.OrderedItem)
+            .FirstOrDefaultAsync(wo => wo.Id == id);
+    }
+
+    public async Task<WorkOrder?> GetWithHistory(Guid id)
+    {
+        return await _context.WorkOrders
+            .Include(wo => wo.OrderedItem)
+            .Include(wo => wo.StateHistory)
+            .Include(wo => wo.AssignedStock)
+            .FirstOrDefaultAsync(wo => wo.Id == id);
     }
 
     public async Task<WorkOrder> Add(WorkOrder workOrder)

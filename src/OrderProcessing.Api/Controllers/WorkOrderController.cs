@@ -8,24 +8,30 @@ namespace OrderProcessing.Api.Controllers;
 
 [ApiController]
 [Route("work-orders")]
-public class WorkOrderController : ControllerBase
+public class WorkOrderController(WorkOrderHandler workOrderHandler) : ControllerBase
 {
-    private readonly WorkOrderHandler _workOrderHandler;
+    private readonly WorkOrderHandler _workOrderHandler = workOrderHandler;
 
-
-    public WorkOrderController(WorkOrderHandler workOrderHandler)
+    [HttpGet("{id:guid}")]
+    public async Task<ActionResult<WorkOrderDto>> Get(Guid id)
     {
-        _workOrderHandler = workOrderHandler;
+        var workOrder = await _workOrderHandler.GetWorkOrder(id);
+        return workOrder is null ? NotFound() : Ok(workOrder);
+    }
+
+    [HttpGet("{id:guid}/history")]
+    public async Task<ActionResult<WorkOrderHistoryDto>> GetHistory(Guid id)
+    {
+        var history = await _workOrderHandler.GetWorkOrderHistory(id);
+        return history is null ? NotFound() : Ok(history);
     }
 
     [HttpPost]
     public async Task<ActionResult<WorkOrderDto>> Create([FromBody] CreateWorkOrderRequest request)
     {
         var response = await _workOrderHandler.CreateWorkOrder(request);
-        if (response.IsSuccess)
-        {
-            return Created($"/work-orders/{response.WorkOrder!.Id}", response.WorkOrder);
-        }
-        return BadRequest(response.Error);
+        return response.IsSuccess
+            ? Created($"/work-orders/{response.WorkOrder!.Id}", response.WorkOrder)
+            : BadRequest(response.Error);
     }
 }

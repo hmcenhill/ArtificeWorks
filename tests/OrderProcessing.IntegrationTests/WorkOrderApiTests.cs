@@ -78,4 +78,75 @@ public class WorkOrderApiTests : IClassFixture<ApiFixture>
 
         Assert.Equal(expectedErrorMessage, errorMessage);
     }
+
+    [Fact]
+    public async Task GetWorkOrder_ReturnsExistingWorkOrder()
+    {
+        // Arrange — create a product and work order first
+        await _fixture.Client.PostAsJsonAsync("/products", new CreateProductRequest
+        {
+            Requestor = "John Tester",
+            ProductId = "Item-Get-001",
+            ProductName = "Get Test Product"
+        });
+        var createResponse = await _fixture.Client.PostAsJsonAsync("/work-orders", new CreateWorkOrderRequest
+        {
+            Requestor = "Jane Tester",
+            ItemId = "Item-Get-001",
+            Qty = 3
+        });
+        var created = await createResponse.Content.ReadFromJsonAsync<WorkOrderDto>();
+
+        // Act
+        var response = await _fixture.Client.GetAsync($"/work-orders/{created!.Id}");
+
+        // Assert
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        var workOrder = await response.Content.ReadFromJsonAsync<WorkOrderDto>();
+        Assert.NotNull(workOrder);
+        Assert.Equal(created.Id, workOrder.Id);
+        Assert.Equal(Domain.Models.WorkOrderStatus.Intake, workOrder.Status);
+        Assert.Equal("Item-Get-001", workOrder.OrderedItemId);
+    }
+
+    [Fact]
+    public async Task GetWorkOrder_ReturnsNotFoundForMissingOrder()
+    {
+        // Act
+        var response = await _fixture.Client.GetAsync($"/work-orders/{Guid.NewGuid()}");
+
+        // Assert
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetWorkOrderHistory_ReturnsHistoryForExistingOrder()
+    {
+        // Arrange
+        await _fixture.Client.PostAsJsonAsync("/products", new CreateProductRequest
+        {
+            Requestor = "John Tester",
+            ProductId = "Item-History-001",
+            ProductName = "History Test Product"
+        });
+        var createResponse = await _fixture.Client.PostAsJsonAsync("/work-orders", new CreateWorkOrderRequest
+        {
+            Requestor = "Jane Tester",
+            ItemId = "Item-History-001",
+            Qty = 2,
+            Notes = "history test"
+        });
+        var created = await createResponse.Content.ReadFromJsonAsync<WorkOrderDto>();
+
+        // Act
+        var response = await _fixture.Client.GetAsync($"/work-orders/{created!.Id}/history");
+
+        // Assert
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        var history = await response.Content.ReadFromJsonAsync<WorkOrderHistoryDto>();
+        Assert.NotNull(history);
+        Assert.Equal(created.Id, history.WorkOrderId);
+        Assert.Single(history.History);
+        Assert.Equal(Domain.Models.WorkOrderStatus.Intake, history.History.First().Status);
+    }
 }
