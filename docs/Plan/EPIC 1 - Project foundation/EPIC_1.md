@@ -2,22 +2,19 @@
 
 **Labels:** epic, infra, devex
 **Milestone:** M1
+**Status:** ✅ Complete
 
 ## Summary
 
-Create the initial repository structure, local development environment, and delivery pipeline so the project can be built and run consistently.
+Initial repository structure, local development environment, and delivery pipeline so the project can be built and run consistently.
 
-## Why
+## What was delivered
 
-A reliable foundation reduces friction and makes every later feature easier to implement and test.
-
-## Scope
-
-- Solution structure
-- Local Docker infrastructure
-- API bootstrap
-- Database migrations
-- CI pipeline
+- Clean-architecture solution: Domain / Application / Infrastructure / Api / Workers, with Unit and Integration test projects
+- Docker Compose stack: PostgreSQL, RabbitMQ (+ management UI), Redis
+- ASP.NET Core API bootstrap with Swagger and health checks
+- EF Core migrations against PostgreSQL
+- GitHub Actions CI running build and tests on push/PR
 
 ## Acceptance Criteria
 
@@ -29,4 +26,4 @@ A reliable foundation reduces friction and makes every later feature easier to i
 
 ## Notes
 
-This epic is complete when a fresh clone can be built and started without manual setup beyond documented prerequisites.
+Completed under the project's original storefront identity; renamed to ArtificeWorks in July 2026. Integration tests use Testcontainers, so a local Docker daemon is required to run the full suite.
