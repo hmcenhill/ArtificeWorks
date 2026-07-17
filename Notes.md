@@ -1,9 +1,9 @@
 - Initial migration. When DbContext is in a different assembly than startup, it is good to explicity specify the startup and target projects:
-  `dotnet ef migrations add InitialCreate --project src/OrderProcessing.Infrastructure --startup-project src/OrderProcessing.Api --output-dir Persistence/Migrations`
+  `dotnet ef migrations add InitialCreate --project src/ArtificeWorks.Infrastructure --startup-project src/ArtificeWorks.Api --output-dir Persistence/Migrations`
 
 - Apply Migration:
-  - Local: `dotnet ef database update --project src/OrderProcessing.Infrastructure --startup-project src/OrderProcessing.Api`
-  - Release: `dotnet ef migrations script --project src/OrderProcessing.Infrastructure --startup-project src/OrderProcessing.Api`
+  - Local: `dotnet ef database update --project src/ArtificeWorks.Infrastructure --startup-project src/ArtificeWorks.Api`
+  - Release: `dotnet ef migrations script --project src/ArtificeWorks.Infrastructure --startup-project src/ArtificeWorks.Api`
   - Note: SQL script is better for production deployements for record-keeping purposes
 
 Docker Commands I keep forgetting:
@@ -15,4 +15,4 @@ Docker Commands I keep forgetting:
 
 connect to postgresql db:
 
-`docker exec -it orderprocessing-postgres psql -U postgres -d orderprocessing`
+`docker exec -it artificeworks-postgres psql -U postgres -d artificeworks`

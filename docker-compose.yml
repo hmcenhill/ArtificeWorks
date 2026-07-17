@@ -1,10 +1,10 @@
 services:
   postgres:
     image: postgres:16
-    container_name: orderprocessing-postgres
+    container_name: artificeworks-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: orderprocessing
+      POSTGRES_DB: artificeworks
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
@@ -12,14 +12,14 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d orderprocessing"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d artificeworks"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   rabbitmq:
     image: rabbitmq:3-management
-    container_name: orderprocessing-rabbitmq
+    container_name: artificeworks-rabbitmq
     restart: unless-stopped
     environment:
       RABBITMQ_DEFAULT_USER: guest
@@ -37,7 +37,7 @@ services:
 
   redis:
     image: redis:7
-    container_name: orderprocessing-redis
+    container_name: artificeworks-redis
     restart: unless-stopped
     ports:
       - "6379:6379"

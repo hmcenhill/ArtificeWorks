@@ -1,3 +1,11 @@
+# ArtificeWorks
+
+The manufacturing backbone of **Hermannsson Artifice Works** — a virtual factory that builds automata for the work humans shouldn't have to do alone.
+
+Hermannsson produces three configurable product lines from a single shared platform — a common chassis, power core, and control architecture: the **Custodian**, a service automaton for logistics and facility work; the **Delver**, a rugged mining unit built for extraction and hazardous terrain; and the **Courier**, a wheeled delivery automaton for last-mile transport. Every unit ships configure-to-order, its tool-hands, locomotion, and sensor suite swapped from a shared parts catalog — a mine-spec Delver shares 70% of its bill of materials with a hospitality Custodian.
+
+This repository is the event-driven system that runs the factory: work order scheduling, BOM-driven material picking, production and inspection workflows, and shipment scheduling — built as a portfolio project demonstrating event-driven architecture and domain-driven design. See [docs/Plan](docs/Plan/) for the roadmap.
+
 ## Local infrastructure
 
 This project uses Docker Compose for local development infrastructure.
@@ -13,7 +21,7 @@ This project uses Docker Compose for local development infrastructure.
 
 #### PostgreSQL
 
-- Database: `orderprocessing`
+- Database: `artificeworks`
 - Username: `postgres`
 - Password: `postgres`
 

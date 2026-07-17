@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ArtificeWorks.Api/ArtificeWorks.Api.csproj" />
+    <Project Path="src/ArtificeWorks.Application/ArtificeWorks.Application.csproj" />
+    <Project Path="src/ArtificeWorks.Domain/ArtificeWorks.Domain.csproj" />
+    <Project Path="src/ArtificeWorks.Infrastructure/ArtificeWorks.Infrastructure.csproj" />
+    <Project Path="src/ArtificeWorks.Workers/ArtificeWorks.Workers.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ArtificeWorks.IntegrationTests/ArtificeWorks.IntegrationTests.csproj" />
+    <Project Path="tests/ArtificeWorks.UnitTests/ArtificeWorks.UnitTests.csproj" />
+  </Folder>
+</Solution>
