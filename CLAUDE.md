@@ -9,8 +9,8 @@ Event-driven manufacturing management system for a fictional automata factory (H
 - Claude writes most of the code; the user directs, reviews, and must always be able to follow what's happening. Explain design decisions and tradeoffs as you go — flag problems, don't silently fix them.
 - Work story-by-story from `docs/Plan/`. Stories are groomed just-in-time: epic files exist for everything, story files only for the active epic(s).
 - Pipeline-first principle: don't deepen the domain ahead of the async backbone. Keep the system demoable at every milestone.
-- Commits go directly to `main` (solo project). Commit at coherent checkpoints with descriptive messages.
-- **Before ending a conversation that changed anything: update [HANDOFF.md](HANDOFF.md)** (see the protocol note at its top) and commit it with the work.
+- **The user handles all source control** (staging, committing, pushing). Claude does not run `git add`/`commit`/`push` — leave changes in the working tree for the user to review and commit. At the end of a story or epic (whenever a commit seems appropriate), draft a commit message for the user without committing.
+- **Before ending a conversation that changed anything: update [HANDOFF.md](HANDOFF.md)** (see the protocol note at its top) so it can be committed alongside the work.
 
 ## Architecture
 

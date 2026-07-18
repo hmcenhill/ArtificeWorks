@@ -149,4 +149,99 @@ public class WorkOrderApiTests : IClassFixture<ApiFixture>
         Assert.Single(history.History);
         Assert.Equal(Domain.Models.WorkOrderStatus.Intake, history.History.First().Status);
     }
+
+    [Fact]
+    public async Task AdvanceWorkOrder_TransitionsToNextStatusAndRecordsHistory()
+    {
+        // Arrange
+        var created = await CreateWorkOrder("Item-Advance-001");
+
+        // Act
+        var response = await _fixture.Client.PostAsJsonAsync(
+            $"/work-orders/{created!.Id}/advance",
+            new WorkOrderCommandRequest { CreatedBy = "Line Lead", Notes = "kick off scheduling" });
+
+        // Assert
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        var advanced = await response.Content.ReadFromJsonAsync<WorkOrderDto>();
+        Assert.NotNull(advanced);
+        Assert.Equal(Domain.Models.WorkOrderStatus.Scheduled, advanced.Status);
+
+        var historyResponse = await _fixture.Client.GetFromJsonAsync<WorkOrderHistoryDto>(
+            $"/work-orders/{created.Id}/history");
+        Assert.NotNull(historyResponse);
+        Assert.Equal(2, historyResponse.History.Count);
+        Assert.Equal(Domain.Models.WorkOrderStatus.Scheduled, historyResponse.History.Last().Status);
+    }
+
+    [Fact]
+    public async Task HoldThenReleaseWorkOrder_ReturnsToPreviousStatus()
+    {
+        // Arrange
+        var created = await CreateWorkOrder("Item-Hold-001");
+
+        // Act — hold
+        var holdResponse = await _fixture.Client.PostAsJsonAsync(
+            $"/work-orders/{created!.Id}/hold",
+            new WorkOrderCommandRequest { CreatedBy = "Line Lead" });
+        var held = await holdResponse.Content.ReadFromJsonAsync<WorkOrderDto>();
+
+        // Act — release
+        var releaseResponse = await _fixture.Client.PostAsJsonAsync(
+            $"/work-orders/{created.Id}/release",
+            new WorkOrderCommandRequest { CreatedBy = "Line Lead" });
+        var released = await releaseResponse.Content.ReadFromJsonAsync<WorkOrderDto>();
+
+        // Assert
+        Assert.Equal(System.Net.HttpStatusCode.OK, holdResponse.StatusCode);
+        Assert.Equal(Domain.Models.WorkOrderStatus.OnHold, held!.Status);
+        Assert.Equal(System.Net.HttpStatusCode.OK, releaseResponse.StatusCode);
+        Assert.Equal(Domain.Models.WorkOrderStatus.Intake, released!.Status);
+    }
+
+    [Fact]
+    public async Task ReleaseWorkOrder_NotHeld_ReturnsConflictWithReason()
+    {
+        // Arrange
+        var created = await CreateWorkOrder("Item-Release-001");
+
+        // Act — releasing an order that was never held
+        var response = await _fixture.Client.PostAsJsonAsync(
+            $"/work-orders/{created!.Id}/release",
+            new WorkOrderCommandRequest { CreatedBy = "Line Lead" });
+
+        // Assert
+        Assert.Equal(System.Net.HttpStatusCode.Conflict, response.StatusCode);
+        var reason = await response.Content.ReadAsStringAsync();
+        Assert.False(string.IsNullOrWhiteSpace(reason));
+    }
+
+    [Fact]
+    public async Task AdvanceWorkOrder_MissingOrder_ReturnsNotFound()
+    {
+        // Act
+        var response = await _fixture.Client.PostAsJsonAsync(
+            $"/work-orders/{Guid.NewGuid()}/advance",
+            new WorkOrderCommandRequest { CreatedBy = "Line Lead" });
+
+        // Assert
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    private async Task<WorkOrderDto?> CreateWorkOrder(string productId)
+    {
+        await _fixture.Client.PostAsJsonAsync("/products", new CreateProductRequest
+        {
+            Requestor = "John Tester",
+            ProductId = productId,
+            ProductName = "Lifecycle Test Product"
+        });
+        var createResponse = await _fixture.Client.PostAsJsonAsync("/work-orders", new CreateWorkOrderRequest
+        {
+            Requestor = "Jane Tester",
+            ItemId = productId,
+            Qty = 3
+        });
+        return await createResponse.Content.ReadFromJsonAsync<WorkOrderDto>();
+    }
 }

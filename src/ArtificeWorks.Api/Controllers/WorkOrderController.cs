@@ -34,4 +34,25 @@ public class WorkOrderController(WorkOrderHandler workOrderHandler) : Controller
             ? Created($"/work-orders/{response.WorkOrder!.Id}", response.WorkOrder)
             : BadRequest(response.Error);
     }
+
+    [HttpPost("{id:guid}/advance")]
+    public async Task<ActionResult<WorkOrderDto>> Advance(Guid id, [FromBody] WorkOrderCommandRequest request)
+        => MapCommandResult(await _workOrderHandler.AdvanceWorkOrder(id, request));
+
+    [HttpPost("{id:guid}/hold")]
+    public async Task<ActionResult<WorkOrderDto>> Hold(Guid id, [FromBody] WorkOrderCommandRequest request)
+        => MapCommandResult(await _workOrderHandler.HoldWorkOrder(id, request));
+
+    [HttpPost("{id:guid}/release")]
+    public async Task<ActionResult<WorkOrderDto>> Release(Guid id, [FromBody] WorkOrderCommandRequest request)
+        => MapCommandResult(await _workOrderHandler.ReleaseWorkOrder(id, request));
+
+    private ActionResult<WorkOrderDto> MapCommandResult(WorkOrderCommandResponse response) => response.Outcome switch
+    {
+        WorkOrderCommandOutcome.Success => Ok(response.WorkOrder),
+        WorkOrderCommandOutcome.NotFound => NotFound(response.Error),
+        // Rejected transition: the request conflicts with the order's current state.
+        // 3.3 will formalise this as a ProblemDetails payload.
+        _ => Conflict(response.Error)
+    };
 }

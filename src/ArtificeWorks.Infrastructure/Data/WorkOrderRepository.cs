@@ -37,4 +37,14 @@ public class WorkOrderRepository : IWorkOrderRepository
         await _context.SaveChangesAsync();
         return createdWorkOrder.Entity;
     }
+
+    public async Task Update(WorkOrder workOrder)
+    {
+        // The work order is loaded and tracked by the same scoped context, so the
+        // change tracker already sees the status change and the newly appended
+        // history entry (marked Added). Calling DbSet.Update here would instead
+        // flag that new entry as Modified and try to UPDATE a nonexistent row, so
+        // we just flush the tracked changes.
+        await _context.SaveChangesAsync();
+    }
 }

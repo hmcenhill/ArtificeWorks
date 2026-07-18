@@ -6,19 +6,21 @@
 
 ## Current state
 
-- Project renamed from EventDrivenOrderProcessingSystem to **ArtificeWorks** (commit `21b1753`): solution, projects, namespaces, `ArtificeWorksDbContext`, DB name, docker containers, CI. Build + all 36 tests verified green.
+- Project renamed from EventDrivenOrderProcessingSystem to **ArtificeWorks** (commit `21b1753`): solution, projects, namespaces, `ArtificeWorksDbContext`, DB name, docker containers, CI.
 - Plan fully rewritten for the manufacturing pivot (commit `d218f43`): 17 epics / 7 milestones in `docs/Plan/`. Epics 1–2 complete, Epic 3 in progress.
-- Epic 3 status: work order + product create/get endpoints exist. Lifecycle commands, cancellation, error contract, and test coverage remain (stories 3.1–3.4).
+- **Story 3.1 done**: `POST /work-orders/{id}/advance|hold|release`. Domain lifecycle methods now return `TransitionResult` (success + reason) instead of `bool`; controller maps outcomes to 200 / 404 / 409 (Conflict carries the rejection reason as plain text for now — 3.3 makes it ProblemDetails). All 43 tests green (33 unit + 10 integration).
+- Two fixes made along the way: advancing a `Completed` order is now rejected (previously it silently faulted); and Guid PKs are configured `ValueGeneratedNever` (migration `20260717143811_StoreNeverGeneratesGuidKeys`, empty Up/Down) so appending state history on an update INSERTs instead of throwing a concurrency error.
+- Epic 3 remaining: cancellation, error contract, more integration coverage (stories 3.2–3.4).
 
 ## Next up
 
-1. **Story 3.1** — lifecycle command endpoints (advance/hold/release). Expect it to motivate replacing the domain's `bool` returns with rich results — that refactor is in-scope.
-2. Story 3.2 — cancellation (adds `Cancelled` status to domain).
-3. Stories 3.3 (ProblemDetails error contract), 3.4 (integration coverage).
+1. Story 3.2 — cancellation (adds `Cancelled` status to domain).
+2. Story 3.3 — ProblemDetails error contract (replace the plain-text 409/400 bodies).
+3. Story 3.4 — integration coverage.
 
 ## Open decisions
 
-- Does `SetStatus` (superuser override) get an endpoint in 3.1, or wait for admin auth? (Leaning: wait.)
+- `SetStatus` (superuser override) still has no endpoint — deferred to admin auth, as planned.
 - Stock handling on cancellation (release? return?) — decide in 3.2 and write down the reasoning.
 
 ## User to-dos (not Claude's)

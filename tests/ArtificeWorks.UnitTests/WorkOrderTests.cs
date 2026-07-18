@@ -29,7 +29,7 @@ public class WorkOrderTests
         var response = workOrder.AdvanceToNextStep(DefaultUserName);
 
         // Assert
-        Assert.True(response);
+        Assert.True(response.Success);
         Assert.Equal<WorkOrderStatus>(expectedStatus, workOrder.CurrentStatus);
     }
 
@@ -49,7 +49,7 @@ public class WorkOrderTests
         var response = workOrder.SetHold(DefaultUserName);
 
         // Assert
-        Assert.True(response);
+        Assert.True(response.Success);
         Assert.Equal<WorkOrderStatus>(expectedStatus, workOrder.CurrentStatus);
     }
 
@@ -70,7 +70,7 @@ public class WorkOrderTests
         var releaseHoldResponse = workOrder.ReleaseHold(DefaultUserName);
 
         // Assert
-        Assert.True(holdResponse && releaseHoldResponse);
+        Assert.True(holdResponse.Success && releaseHoldResponse.Success);
         Assert.Equal<WorkOrderStatus>(startingStatus, workOrder.CurrentStatus);
     }
 
@@ -90,7 +90,7 @@ public class WorkOrderTests
         var releaseHoldResponse = workOrder.ReleaseHold(DefaultUserName);
 
         // Assert
-        Assert.False(releaseHoldResponse);
+        Assert.False(releaseHoldResponse.Success);
         Assert.Equal<WorkOrderStatus>(startingStatus, workOrder.CurrentStatus);
     }
 
@@ -107,7 +107,7 @@ public class WorkOrderTests
         var response = workOrder.AdvanceToNextStep(DefaultUserName);
 
         // Assert
-        Assert.False(response);
+        Assert.False(response.Success);
         Assert.Equal<WorkOrderStatus>(expectedStatus, workOrder.CurrentStatus);
     }
 
@@ -124,8 +124,52 @@ public class WorkOrderTests
         var response = workOrder.SetHold(DefaultUserName);
 
         // Assert
-        Assert.False(response);
+        Assert.False(response.Success);
         Assert.Equal<WorkOrderStatus>(expectedStatus, workOrder.CurrentStatus);
+    }
+
+    [Fact]
+    public void WorkOrders_CompletedOrdersWontAdvance()
+    {
+        // Arrange
+        var workOrder = new WorkOrder(DefaultUserName, TestData.DefaultProduct(), 5);
+        workOrder.SetStatus(WorkOrderStatus.Completed, DefaultUserName);
+
+        // Act
+        var response = workOrder.AdvanceToNextStep(DefaultUserName);
+
+        // Assert — a completed order must not silently fault by advancing off the end
+        Assert.False(response.Success);
+        Assert.Equal<WorkOrderStatus>(WorkOrderStatus.Completed, workOrder.CurrentStatus);
+    }
+
+    [Fact]
+    public void WorkOrders_RejectedTransitionsExplainWhy()
+    {
+        // Arrange
+        var workOrder = new WorkOrder(DefaultUserName, TestData.DefaultProduct(), 5);
+        workOrder.SetStatus(WorkOrderStatus.OnHold, DefaultUserName);
+
+        // Act
+        var response = workOrder.AdvanceToNextStep(DefaultUserName);
+
+        // Assert
+        Assert.False(response.Success);
+        Assert.False(string.IsNullOrWhiteSpace(response.Error));
+    }
+
+    [Fact]
+    public void WorkOrders_SuccessfulTransitionsCarryNoError()
+    {
+        // Arrange
+        var workOrder = new WorkOrder(DefaultUserName, TestData.DefaultProduct(), 5);
+
+        // Act
+        var response = workOrder.AdvanceToNextStep(DefaultUserName);
+
+        // Assert
+        Assert.True(response.Success);
+        Assert.Null(response.Error);
     }
 
     [Fact]

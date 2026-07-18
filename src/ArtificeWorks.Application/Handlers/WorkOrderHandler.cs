@@ -29,6 +29,45 @@ public class WorkOrderHandler
         return workOrder is null ? null : new WorkOrderHistoryDto(workOrder);
     }
 
+    public Task<WorkOrderCommandResponse> AdvanceWorkOrder(Guid id, WorkOrderCommandRequest request)
+        => ExecuteCommand(id, wo => wo.AdvanceToNextStep(request.CreatedBy, request.Notes));
+
+    public Task<WorkOrderCommandResponse> HoldWorkOrder(Guid id, WorkOrderCommandRequest request)
+        => ExecuteCommand(id, wo => wo.SetHold(request.CreatedBy, request.Notes));
+
+    public Task<WorkOrderCommandResponse> ReleaseWorkOrder(Guid id, WorkOrderCommandRequest request)
+        => ExecuteCommand(id, wo => wo.ReleaseHold(request.CreatedBy, request.Notes));
+
+    private async Task<WorkOrderCommandResponse> ExecuteCommand(Guid id, Func<WorkOrder, TransitionResult> command)
+    {
+        var workOrder = await _workOrderRepository.GetWithHistory(id);
+        if (workOrder is null)
+        {
+            return new WorkOrderCommandResponse
+            {
+                Outcome = WorkOrderCommandOutcome.NotFound,
+                Error = $"No work order found with id: {id}"
+            };
+        }
+
+        var result = command(workOrder);
+        if (!result.Success)
+        {
+            return new WorkOrderCommandResponse
+            {
+                Outcome = WorkOrderCommandOutcome.Rejected,
+                Error = result.Error
+            };
+        }
+
+        await _workOrderRepository.Update(workOrder);
+        return new WorkOrderCommandResponse
+        {
+            Outcome = WorkOrderCommandOutcome.Success,
+            WorkOrder = new WorkOrderDto(workOrder)
+        };
+    }
+
     public async Task<CreateWorkOrderResponse> CreateWorkOrder(CreateWorkOrderRequest request)
     {
         var product = await _productRepository.Get(request.ItemId);

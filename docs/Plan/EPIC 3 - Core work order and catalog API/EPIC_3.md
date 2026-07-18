@@ -23,7 +23,7 @@ The API is the entry point to the factory and the surface the demo dashboard wil
 ## Acceptance Criteria
 
 - [x] Create and get-by-id endpoints exist for work orders and products
-- [ ] Lifecycle commands (advance, hold, release) are exposed and guarded
+- [x] Lifecycle commands (advance, hold, release) are exposed and guarded
 - [ ] Cancel endpoint exists with clearly defined allowed states
 - [ ] Invalid transitions return a consistent, informative error shape
 - [ ] Core API behavior is covered by integration tests

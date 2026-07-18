@@ -27,6 +27,13 @@ public class ArtificeWorksDbContext : DbContext
 
             entity.HasKey(x => x.Id);
 
+            // The domain generates aggregate ids (Guid.NewGuid() in the constructor),
+            // so the store must never generate them. Without this, EF treats a
+            // client-set Guid key on a graph child as an existing row and issues an
+            // UPDATE instead of an INSERT when new state history is appended.
+            entity.Property(x => x.Id)
+                .ValueGeneratedNever();
+
             entity.Property(x => x.CurrentStatus)
                 .HasConversion<string>()
                 .IsRequired();
@@ -61,6 +68,9 @@ public class ArtificeWorksDbContext : DbContext
 
             entity.HasKey(x => x.Id);
 
+            entity.Property(x => x.Id)
+                .ValueGeneratedNever();
+
             entity.Property(x => x.Status)
                 .HasConversion<string>()
                 .IsRequired();
@@ -94,6 +104,9 @@ public class ArtificeWorksDbContext : DbContext
             entity.ToTable("skus");
 
             entity.HasKey(x => x.SerialNumber);
+
+            entity.Property(x => x.SerialNumber)
+                .ValueGeneratedNever();
 
             entity.Property<string>("product_item_id");
 

@@ -58,46 +58,47 @@ public class WorkOrder
         UpdateStateHistory(createdBy, notes);
     }
 
-    public bool AdvanceToNextStep(string createdBy, string? notes = null)
+    public TransitionResult AdvanceToNextStep(string createdBy, string? notes = null)
     {
+        if (CurrentStatus == WorkOrderStatus.Completed)
+        {
+            return TransitionResult.Rejected("Work order is already Completed and cannot be advanced further.");
+        }
         if (!CanAdvance())
         {
-            // Error: Invalid advancement request
-            return false;
+            return TransitionResult.Rejected($"Work order cannot be advanced while it is {CurrentStatus}. Release it first.");
         }
         PreviousStatus = CurrentStatus;
         CurrentStatus = GetNextStatus(CurrentStatus);
         UpdateStateHistory(createdBy, notes);
 
-        return true;
+        return TransitionResult.Ok();
     }
 
     private bool CanAdvance() => !_cantAdvanceStatuses.Contains(CurrentStatus);
 
-    public bool SetHold(string createdBy, string? notes = null)
+    public TransitionResult SetHold(string createdBy, string? notes = null)
     {
         if (_holdStatuses.Contains(CurrentStatus))
         {
-            // Error: Can't hold something already being held
-            return false;
+            return TransitionResult.Rejected($"Work order is already {CurrentStatus} and cannot be held again.");
         }
         PreviousStatus = CurrentStatus;
         CurrentStatus = WorkOrderStatus.OnHold;
         UpdateStateHistory(createdBy, notes);
-        return true;
+        return TransitionResult.Ok();
     }
 
-    public bool ReleaseHold(string createdBy, string? notes = null)
+    public TransitionResult ReleaseHold(string createdBy, string? notes = null)
     {
         if (!_holdStatuses.Contains(CurrentStatus) || PreviousStatus is null)
         {
-            // Error: Can only release something already being held
-            return false;
+            return TransitionResult.Rejected($"Work order is {CurrentStatus} and is not currently held; nothing to release.");
         }
         CurrentStatus = PreviousStatus.Value;
         PreviousStatus = null;
         UpdateStateHistory(createdBy, notes);
-        return true;
+        return TransitionResult.Ok();
     }
 
     private void UpdateStateHistory(string createdBy, string? notes = null)
