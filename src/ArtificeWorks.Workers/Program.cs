@@ -10,8 +10,13 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 var builder = Host.CreateApplicationBuilder(args);
+
+// Render logging scopes so the correlation id the consumer pushes per delivery prefixes
+// every log line — grepping one id spans the API and worker sides. See docs/messaging-topology.md.
+builder.Logging.AddSimpleConsole(options => options.IncludeScopes = true);
 
 var connectionString = builder.Configuration.GetConnectionString("ArtificeWorksDatabase")
     ?? throw new InvalidOperationException("Connection string 'ArtificeWorksDatabase' was not found.");

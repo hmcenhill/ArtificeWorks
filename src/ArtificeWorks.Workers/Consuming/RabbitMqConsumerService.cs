@@ -1,3 +1,4 @@
+using ArtificeWorks.Application.Messaging;
 using ArtificeWorks.Infrastructure.Messaging;
 
 using Microsoft.Extensions.Hosting;
@@ -93,21 +94,32 @@ public sealed class RabbitMqConsumerService : BackgroundService
     {
         // The publisher routes by event type, so the routing key IS the event type.
         var eventType = eventArgs.RoutingKey;
-        try
-        {
-            await _dispatcher.DispatchAsync(eventType, eventArgs.Body, eventArgs.CancellationToken);
-            await _channel!.BasicAckAsync(eventArgs.DeliveryTag, multiple: false, eventArgs.CancellationToken);
-        }
-        catch (Exception ex)
-        {
-            // Nack WITHOUT requeue: with no dead-letter queue yet (Epic 8), requeuing a
-            // poison message would loop forever, so we drop it — the deliberate first-slice
-            // policy. Catching here also guarantees a faulty handler can't kill the loop.
-            _logger.LogError(ex,
-                "Handling {EventType} (delivery {DeliveryTag}) failed; nacking without requeue — message dropped.",
-                eventType, eventArgs.DeliveryTag);
 
-            await _channel!.BasicNackAsync(eventArgs.DeliveryTag, multiple: false, requeue: false, eventArgs.CancellationToken);
+        // The publisher stamps the envelope's correlation id onto the AMQP correlation_id
+        // property, so we open the log scope from message metadata alone — no need to
+        // deserialize the body first. Every log line for this delivery (the dispatcher's,
+        // the handler's, the nack below) inherits the id via the shared correlation scope,
+        // matching the API's request scope on the other side (4.3). The delivery scope adds
+        // the event type and id for local triage.
+        using (_logger.BeginScope("EventType:{EventType} EventId:{EventId}", eventType, eventArgs.BasicProperties.MessageId ?? "?"))
+        using (_logger.BeginCorrelationScope(eventArgs.BasicProperties.CorrelationId))
+        {
+            try
+            {
+                await _dispatcher.DispatchAsync(eventType, eventArgs.Body, eventArgs.CancellationToken);
+                await _channel!.BasicAckAsync(eventArgs.DeliveryTag, multiple: false, eventArgs.CancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // Nack WITHOUT requeue: with no dead-letter queue yet (Epic 8), requeuing a
+                // poison message would loop forever, so we drop it — the deliberate first-slice
+                // policy. Catching here also guarantees a faulty handler can't kill the loop.
+                _logger.LogError(ex,
+                    "Handling {EventType} (delivery {DeliveryTag}) failed; nacking without requeue — message dropped.",
+                    eventType, eventArgs.DeliveryTag);
+
+                await _channel!.BasicNackAsync(eventArgs.DeliveryTag, multiple: false, requeue: false, eventArgs.CancellationToken);
+            }
         }
     }
 

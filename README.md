@@ -6,6 +6,10 @@ Hermannsson produces three configurable product lines from a single shared platf
 
 This repository is the event-driven system that runs the factory: work order scheduling, BOM-driven material picking, production and inspection workflows, and shipment scheduling — built as a portfolio project demonstrating event-driven architecture and domain-driven design. See [docs/Plan](docs/Plan/) for the roadmap.
 
+## Documentation
+
+- [Messaging topology](docs/messaging-topology.md) — RabbitMQ exchange, queues, bindings, message shape, and how a correlation id threads one work order's story through both services' logs.
+
 ## Local infrastructure
 
 This project uses Docker Compose for local development infrastructure.

@@ -21,10 +21,10 @@ The event-driven pipeline is the project's core differentiator. This epic delive
 
 ## Acceptance Criteria
 
-- [ ] App can publish typed events to RabbitMQ
-- [ ] Workers service consumes events and dispatches to handlers
-- [ ] Correlation IDs propagate across API → event → worker
-- [ ] Topology and local broker wiring are documented
+- [x] App can publish typed events to RabbitMQ
+- [x] Workers service consumes events and dispatches to handlers
+- [x] Correlation IDs propagate across API → event → worker
+- [x] Topology and local broker wiring are documented
 
 ## Stories
 

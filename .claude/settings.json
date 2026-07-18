@@ -18,7 +18,18 @@
       "Bash(docker compose *)",
       "Bash(curl -s __TRACKED_VAR__/exchanges/%2f/artifice.events)",
       "Bash(curl -s -D - -o /dev/null -X POST __TRACKED_VAR__/work-orders/__TRACKED_VAR__/advance -H 'Content-Type: application/json' -H 'X-Correlation-ID: __TRACKED_VAR__' -d '{\"createdBy\":\"verify\",\"notes\":\"advancing to scheduled\"}')",
-      "Bash(curl -s -X DELETE __TRACKED_VAR__/queues/%2f/verify-scheduled -o /dev/null -w 'delete-verify-queue: %{http_code}\\\\n')"
+      "Bash(curl -s -X DELETE __TRACKED_VAR__/queues/%2f/verify-scheduled -o /dev/null -w 'delete-verify-queue: %{http_code}\\\\n')",
+      "Bash(tail -30 /tmp/api_out.log)",
+      "Read(//tmp/**)",
+      "Bash(powershell -Command 'Get-CimInstance Win32_Process -Filter \"Name='\\\\''ArtificeWorks.Api.exe'\\\\'' OR Name='\\\\''dotnet.exe'\\\\''\" | Where-Object { $_.CommandLine -like '\\\\''*ArtificeWorks.Api*'\\\\'' } | ForEach-Object { Write-Output \\(\"killing \" + $_.ProcessId\\); Stop-Process -Id $_.ProcessId -Force }')",
+      "Bash(sed -n '30,45p' /tmp/api_out.log)",
+      "Bash(powershell -Command 'Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '\\\\''*ArtificeWorks.Api*'\\\\'' -and \\($_.Name -eq '\\\\''ArtificeWorks.Api.exe'\\\\'' -or $_.CommandLine -like '\\\\''*run*'\\\\''\\) } | ForEach-Object { Write-Output \\('\\\\''killing '\\\\'' + $_.ProcessId + '\\\\'' '\\\\'' + $_.Name\\); Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }')",
+      "Bash(powershell -Command 'Get-CimInstance Win32_Process | Where-Object { $_.Name -eq '\\\\''ArtificeWorks.Api.exe'\\\\'' } | Select-Object ProcessId | ForEach-Object { Write-Output \\('\\\\''alive: '\\\\'' + $_.ProcessId\\) }; Write-Output '\\\\''checked'\\\\''')",
+      "Bash(cd \"c:/Users/hmcen/source/repos/ArtificeWorks\" && echo \"=== bin appsettings ===\" && cat src/ArtificeWorks.Api/bin/Debug/net10.0/appsettings.json && echo \"=== any scope '=>' lines in log? ===\" && grep -c \"=>\" /tmp/api_out.log)",
+      "Bash(powershell -Command \"Get-Process -Name 'ArtificeWorks.Api' -ErrorAction SilentlyContinue | Stop-Process -Force; Write-Output 'killed'\")",
+      "Bash(powershell -Command \"Get-Process -Name 'ArtificeWorks.Api','ArtificeWorks.Workers' -ErrorAction SilentlyContinue | Stop-Process -Force; Write-Output 'clean'\")",
+      "Bash(xargs cat)",
+      "Bash(powershell -Command '$p = Get-Process -Name '\\\\''ArtificeWorks.Api'\\\\'','\\\\''ArtificeWorks.Workers'\\\\'' -ErrorAction SilentlyContinue; if \\($p\\) { $p | Stop-Process -Force; Write-Output '\\\\''killed leftovers'\\\\'' } else { Write-Output '\\\\''none running'\\\\'' }')"
     ]
   }
 }

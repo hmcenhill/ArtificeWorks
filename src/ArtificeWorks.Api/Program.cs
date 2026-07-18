@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 using ArtificeWorks.Api.Configuration;
 using ArtificeWorks.Api.Errors;
@@ -12,6 +13,11 @@ using ArtificeWorks.Infrastructure.Messaging;
 using ArtificeWorks.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Render logging scopes on the console so the per-request correlation id (pushed by
+// CorrelationMiddleware) prefixes every log line — one grep of a correlation id then
+// tells that request's whole story. See docs/messaging-topology.md.
+builder.Logging.AddSimpleConsole(options => options.IncludeScopes = true);
 
 builder.Services.Configure<RedisConfiguration>(builder.Configuration.GetSection(nameof(RedisConfiguration)));
 
