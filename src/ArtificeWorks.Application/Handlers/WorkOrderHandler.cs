@@ -59,6 +59,7 @@ public class WorkOrderHandler
             return new WorkOrderCommandResponse
             {
                 Outcome = WorkOrderCommandOutcome.Rejected,
+                ReasonCode = result.Code,
                 Error = result.Error
             };
         }
@@ -74,36 +75,40 @@ public class WorkOrderHandler
     public async Task<CreateWorkOrderResponse> CreateWorkOrder(CreateWorkOrderRequest request)
     {
         var product = await _productRepository.Get(request.ItemId);
-        var errors = string.Empty;
         if (product is null)
         {
-            errors = $"Error creating work order: no product found with id: {request.ItemId}";
-        }
-        else
-        {
-            var newOrder = new WorkOrder(request.Requestor, product, request.Qty, request.Notes);
-            try
+            return new CreateWorkOrderResponse
             {
-                var savedWorkOrder = await _workOrderRepository.Add(newOrder);
-                if (savedWorkOrder is not null)
+                Outcome = CreateWorkOrderOutcome.ProductNotFound,
+                Error = $"No product found with id: {request.ItemId}"
+            };
+        }
+
+        var newOrder = new WorkOrder(request.Requestor, product, request.Qty, request.Notes);
+        try
+        {
+            var savedWorkOrder = await _workOrderRepository.Add(newOrder);
+            if (savedWorkOrder is not null)
+            {
+                return new CreateWorkOrderResponse
                 {
-                    return new CreateWorkOrderResponse
-                    {
-                        IsSuccess = true,
-                        WorkOrder = new WorkOrderDto(savedWorkOrder)
-                    };
-                }
-                errors = "Save action returned no response";
+                    Outcome = CreateWorkOrderOutcome.Success,
+                    WorkOrder = new WorkOrderDto(savedWorkOrder)
+                };
             }
-            catch (Exception e)
+            return new CreateWorkOrderResponse
             {
-                errors = e.Message;
-            }
+                Outcome = CreateWorkOrderOutcome.Error,
+                Error = "Save action returned no response"
+            };
         }
-        return new CreateWorkOrderResponse
+        catch (Exception e)
         {
-            IsSuccess = false,
-            Error = errors
-        };
+            return new CreateWorkOrderResponse
+            {
+                Outcome = CreateWorkOrderOutcome.Error,
+                Error = e.Message
+            };
+        }
     }
 }

@@ -11,7 +11,8 @@
       "Bash(git add *)",
       "Bash(git commit -q -m 'Rename OrderProcessing to ArtificeWorks across solution *)",
       "Bash(git -c core.safecrlf=false commit -q -m 'Rewrite project plan for the ArtificeWorks manufacturing system *)",
-      "Bash(dotnet ef *)"
+      "Bash(dotnet ef *)",
+      "PowerShell(docker info --format '{{.ServerVersion}}' 2>&1)"
     ]
   }
 }

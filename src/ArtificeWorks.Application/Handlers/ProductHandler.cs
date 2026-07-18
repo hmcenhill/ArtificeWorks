@@ -39,37 +39,41 @@ public class ProductHandler
 
     public async Task<CreateProductResponse> CreateProduct(CreateProductRequest request)
     {
-        var errors = string.Empty;
         var existingProduct = await _productRepository.Get(request.ProductId);
         if (existingProduct is not null)
         {
-            errors = $"Error: Product with id: {request.ProductId} already exists.";
-        }
-        else
-        {
-            var newProduct = new Product(request.ProductId, request.ProductName);
-            try
+            return new CreateProductResponse
             {
-                var savedProduct = await _productRepository.Add(newProduct);
-                if (savedProduct is not null)
+                Outcome = CreateProductOutcome.AlreadyExists,
+                Error = $"Product with id: {request.ProductId} already exists."
+            };
+        }
+
+        var newProduct = new Product(request.ProductId, request.ProductName);
+        try
+        {
+            var savedProduct = await _productRepository.Add(newProduct);
+            if (savedProduct is not null)
+            {
+                return new CreateProductResponse
                 {
-                    return new CreateProductResponse
-                    {
-                        IsSuccess = true,
-                        Product = new ProductDto(newProduct)
-                    };
-                }
-                errors = "Save action returned no response";
+                    Outcome = CreateProductOutcome.Success,
+                    Product = new ProductDto(newProduct)
+                };
             }
-            catch (Exception e)
+            return new CreateProductResponse
             {
-                errors = e.Message;
-            }
+                Outcome = CreateProductOutcome.Error,
+                Error = "Save action returned no response"
+            };
         }
-        return new CreateProductResponse
+        catch (Exception e)
         {
-            IsSuccess = false,
-            Error = errors
-        };
+            return new CreateProductResponse
+            {
+                Outcome = CreateProductOutcome.Error,
+                Error = e.Message
+            };
+        }
     }
 }

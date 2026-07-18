@@ -1,4 +1,7 @@
 using System.Net.Http.Json;
+using System.Text.Json;
+
+using Microsoft.AspNetCore.Mvc;
 
 using ArtificeWorks.Application.Commands;
 using ArtificeWorks.Application.Data;
@@ -69,14 +72,33 @@ public class WorkOrderApiTests : IClassFixture<ApiFixture>
         // Act
         var response = await _fixture.Client.PostAsJsonAsync("/work-orders", workOrderRequest);
 
-        // Assert
-        Assert.False(response.IsSuccessStatusCode);
+        // Assert — reason code, not error string (the wire contract)
         Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("product_not_found", await ReadProblemCode(response));
+    }
 
-        var errorMessage = await response.Content.ReadAsStringAsync();
-        var expectedErrorMessage = $"Error creating work order: no product found with id: {nonExistantItemId}";
+    [Fact]
+    public async Task CreateWorkOrder_ZeroQuantity_ReturnsValidationProblem()
+    {
+        // Arrange
+        await _fixture.Client.PostAsJsonAsync("/products", new CreateProductRequest
+        {
+            Requestor = "John Tester",
+            ProductId = "Item-Qty-000",
+            ProductName = "Qty Test Product"
+        });
 
-        Assert.Equal(expectedErrorMessage, errorMessage);
+        // Act — qty 0 must be rejected at the API boundary, not as a 500 from the domain
+        var response = await _fixture.Client.PostAsJsonAsync("/work-orders", new CreateWorkOrderRequest
+        {
+            Requestor = "Jane Tester",
+            ItemId = "Item-Qty-000",
+            Qty = 0
+        });
+
+        // Assert
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("validation_failed", await ReadProblemCode(response));
     }
 
     [Fact]
@@ -117,6 +139,7 @@ public class WorkOrderApiTests : IClassFixture<ApiFixture>
 
         // Assert
         Assert.Equal(System.Net.HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal("work_order_not_found", await ReadProblemCode(response));
     }
 
     [Fact]
@@ -212,8 +235,7 @@ public class WorkOrderApiTests : IClassFixture<ApiFixture>
 
         // Assert
         Assert.Equal(System.Net.HttpStatusCode.Conflict, response.StatusCode);
-        var reason = await response.Content.ReadAsStringAsync();
-        Assert.False(string.IsNullOrWhiteSpace(reason));
+        Assert.Equal("not_held", await ReadProblemCode(response));
     }
 
     [Fact]
@@ -258,8 +280,7 @@ public class WorkOrderApiTests : IClassFixture<ApiFixture>
 
         // Assert
         Assert.Equal(System.Net.HttpStatusCode.Conflict, response.StatusCode);
-        var reason = await response.Content.ReadAsStringAsync();
-        Assert.False(string.IsNullOrWhiteSpace(reason));
+        Assert.Equal("terminal_state", await ReadProblemCode(response));
     }
 
     [Fact]
@@ -272,6 +293,7 @@ public class WorkOrderApiTests : IClassFixture<ApiFixture>
 
         // Assert
         Assert.Equal(System.Net.HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal("work_order_not_found", await ReadProblemCode(response));
     }
 
     [Fact]
@@ -284,6 +306,23 @@ public class WorkOrderApiTests : IClassFixture<ApiFixture>
 
         // Assert
         Assert.Equal(System.Net.HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal("work_order_not_found", await ReadProblemCode(response));
+    }
+
+    /// <summary>
+    /// Reads the machine-readable <c>code</c> extension from an RFC 7807
+    /// ProblemDetails error body — the stable contract consumers branch on.
+    /// </summary>
+    private static async Task<string?> ReadProblemCode(HttpResponseMessage response)
+    {
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+        if (problem is not null
+            && problem.Extensions.TryGetValue("code", out var value)
+            && value is JsonElement element)
+        {
+            return element.GetString();
+        }
+        return null;
     }
 
     private async Task<WorkOrderDto?> CreateWorkOrder(string productId)

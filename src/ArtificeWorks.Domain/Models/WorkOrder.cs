@@ -71,11 +71,13 @@ public class WorkOrder
     {
         if (_terminalStatuses.Contains(CurrentStatus))
         {
-            return TransitionResult.Rejected($"Work order is {CurrentStatus} and cannot be advanced further.");
+            return TransitionResult.Rejected(TransitionErrorCode.TerminalState,
+                $"Work order is {CurrentStatus} and cannot be advanced further.");
         }
         if (!CanAdvance())
         {
-            return TransitionResult.Rejected($"Work order cannot be advanced while it is {CurrentStatus}. Release it first.");
+            return TransitionResult.Rejected(TransitionErrorCode.MustReleaseFirst,
+                $"Work order cannot be advanced while it is {CurrentStatus}. Release it first.");
         }
         PreviousStatus = CurrentStatus;
         CurrentStatus = GetNextStatus(CurrentStatus);
@@ -90,11 +92,13 @@ public class WorkOrder
     {
         if (_terminalStatuses.Contains(CurrentStatus))
         {
-            return TransitionResult.Rejected($"Work order is {CurrentStatus} and cannot be held.");
+            return TransitionResult.Rejected(TransitionErrorCode.TerminalState,
+                $"Work order is {CurrentStatus} and cannot be held.");
         }
         if (_holdStatuses.Contains(CurrentStatus))
         {
-            return TransitionResult.Rejected($"Work order is already {CurrentStatus} and cannot be held again.");
+            return TransitionResult.Rejected(TransitionErrorCode.AlreadyHeld,
+                $"Work order is already {CurrentStatus} and cannot be held again.");
         }
         PreviousStatus = CurrentStatus;
         CurrentStatus = WorkOrderStatus.OnHold;
@@ -106,7 +110,8 @@ public class WorkOrder
     {
         if (!_holdStatuses.Contains(CurrentStatus) || PreviousStatus is null)
         {
-            return TransitionResult.Rejected($"Work order is {CurrentStatus} and is not currently held; nothing to release.");
+            return TransitionResult.Rejected(TransitionErrorCode.NotHeld,
+                $"Work order is {CurrentStatus} and is not currently held; nothing to release.");
         }
         CurrentStatus = PreviousStatus.Value;
         PreviousStatus = null;
@@ -118,7 +123,8 @@ public class WorkOrder
     {
         if (_terminalStatuses.Contains(CurrentStatus))
         {
-            return TransitionResult.Rejected($"Work order is {CurrentStatus} and cannot be cancelled.");
+            return TransitionResult.Rejected(TransitionErrorCode.TerminalState,
+                $"Work order is {CurrentStatus} and cannot be cancelled.");
         }
 
         // A cancelled order must hold no physical stock. There is no separate
