@@ -2,7 +2,7 @@
 
 **Labels:** epic, api, backend
 **Milestone:** M2
-**Status:** 🔨 In progress
+**Status:** ✅ Complete
 
 ## Summary
 
@@ -24,9 +24,9 @@ The API is the entry point to the factory and the surface the demo dashboard wil
 
 - [x] Create and get-by-id endpoints exist for work orders and products
 - [x] Lifecycle commands (advance, hold, release) are exposed and guarded
-- [ ] Cancel endpoint exists with clearly defined allowed states
-- [ ] Invalid transitions return a consistent, informative error shape
-- [ ] Core API behavior is covered by integration tests
+- [x] Cancel endpoint exists with clearly defined allowed states *(3.2)*
+- [x] Invalid transitions return a consistent, informative error shape *(3.3 — RFC 7807 ProblemDetails with stable `code`)*
+- [x] Core API behavior is covered by integration tests *(3.4 — 68 tests green)*
 
 ## Stories
 
