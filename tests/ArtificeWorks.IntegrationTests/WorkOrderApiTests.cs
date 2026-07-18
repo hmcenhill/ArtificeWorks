@@ -217,6 +217,64 @@ public class WorkOrderApiTests : IClassFixture<ApiFixture>
     }
 
     [Fact]
+    public async Task CancelWorkOrder_TransitionsToCancelledAndRecordsHistory()
+    {
+        // Arrange
+        var created = await CreateWorkOrder("Item-Cancel-001");
+
+        // Act
+        var response = await _fixture.Client.PostAsJsonAsync(
+            $"/work-orders/{created!.Id}/cancel",
+            new WorkOrderCommandRequest { CreatedBy = "Line Lead", Notes = "customer withdrew order" });
+
+        // Assert
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        var cancelled = await response.Content.ReadFromJsonAsync<WorkOrderDto>();
+        Assert.NotNull(cancelled);
+        Assert.Equal(Domain.Models.WorkOrderStatus.Cancelled, cancelled.Status);
+
+        var historyResponse = await _fixture.Client.GetFromJsonAsync<WorkOrderHistoryDto>(
+            $"/work-orders/{created.Id}/history");
+        Assert.NotNull(historyResponse);
+        Assert.Equal(Domain.Models.WorkOrderStatus.Cancelled, historyResponse.History.Last().Status);
+    }
+
+    [Fact]
+    public async Task CancelWorkOrder_AlreadyCompleted_ReturnsConflictWithReason()
+    {
+        // Arrange — drive the order all the way to Completed (Intake -> ... -> Completed)
+        var created = await CreateWorkOrder("Item-Cancel-Completed-001");
+        for (var i = 0; i < 5; i++)
+        {
+            await _fixture.Client.PostAsJsonAsync(
+                $"/work-orders/{created!.Id}/advance",
+                new WorkOrderCommandRequest { CreatedBy = "Line Lead" });
+        }
+
+        // Act — cancelling a terminal order must be rejected
+        var response = await _fixture.Client.PostAsJsonAsync(
+            $"/work-orders/{created!.Id}/cancel",
+            new WorkOrderCommandRequest { CreatedBy = "Line Lead" });
+
+        // Assert
+        Assert.Equal(System.Net.HttpStatusCode.Conflict, response.StatusCode);
+        var reason = await response.Content.ReadAsStringAsync();
+        Assert.False(string.IsNullOrWhiteSpace(reason));
+    }
+
+    [Fact]
+    public async Task CancelWorkOrder_MissingOrder_ReturnsNotFound()
+    {
+        // Act
+        var response = await _fixture.Client.PostAsJsonAsync(
+            $"/work-orders/{Guid.NewGuid()}/cancel",
+            new WorkOrderCommandRequest { CreatedBy = "Line Lead" });
+
+        // Assert
+        Assert.Equal(System.Net.HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
     public async Task AdvanceWorkOrder_MissingOrder_ReturnsNotFound()
     {
         // Act

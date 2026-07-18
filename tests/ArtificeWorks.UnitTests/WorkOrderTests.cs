@@ -172,6 +172,98 @@ public class WorkOrderTests
         Assert.Null(response.Error);
     }
 
+    [Theory]
+    [InlineData(WorkOrderStatus.Intake)]
+    [InlineData(WorkOrderStatus.Scheduled)]
+    [InlineData(WorkOrderStatus.InProcess)]
+    [InlineData(WorkOrderStatus.Inspection)]
+    [InlineData(WorkOrderStatus.Delivery)]
+    [InlineData(WorkOrderStatus.OnHold)]
+    [InlineData(WorkOrderStatus.Fault)]
+    public void WorkOrders_CanCancelFromAnyNonTerminalState(WorkOrderStatus startingStatus)
+    {
+        // Arrange
+        var workOrder = new WorkOrder(DefaultUserName, TestData.DefaultProduct(), 5);
+        workOrder.SetStatus(startingStatus, DefaultUserName);
+
+        // Act
+        var response = workOrder.Cancel(DefaultUserName);
+
+        // Assert
+        Assert.True(response.Success);
+        Assert.Equal<WorkOrderStatus>(WorkOrderStatus.Cancelled, workOrder.CurrentStatus);
+    }
+
+    [Theory]
+    [InlineData(WorkOrderStatus.Completed)]
+    [InlineData(WorkOrderStatus.Cancelled)]
+    public void WorkOrders_CannotCancelTerminalOrders(WorkOrderStatus startingStatus)
+    {
+        // Arrange
+        var workOrder = new WorkOrder(DefaultUserName, TestData.DefaultProduct(), 5);
+        workOrder.SetStatus(startingStatus, DefaultUserName);
+
+        // Act
+        var response = workOrder.Cancel(DefaultUserName);
+
+        // Assert
+        Assert.False(response.Success);
+        Assert.False(string.IsNullOrWhiteSpace(response.Error));
+        Assert.Equal<WorkOrderStatus>(startingStatus, workOrder.CurrentStatus);
+    }
+
+    [Fact]
+    public void WorkOrders_CancellationIsTerminal()
+    {
+        // Arrange
+        var workOrder = new WorkOrder(DefaultUserName, TestData.DefaultProduct(), 5);
+
+        // Act
+        var cancelResponse = workOrder.Cancel(DefaultUserName);
+        var advanceResponse = workOrder.AdvanceToNextStep(DefaultUserName);
+        var holdResponse = workOrder.SetHold(DefaultUserName);
+
+        // Assert — a cancelled order accepts no further lifecycle commands
+        Assert.True(cancelResponse.Success);
+        Assert.False(advanceResponse.Success);
+        Assert.False(holdResponse.Success);
+        Assert.Equal<WorkOrderStatus>(WorkOrderStatus.Cancelled, workOrder.CurrentStatus);
+    }
+
+    [Fact]
+    public void WorkOrders_CancellationReleasesAssignedStock()
+    {
+        // Arrange
+        var workOrder = new WorkOrder(DefaultUserName, TestData.DefaultProduct(), 5);
+        workOrder.AssignSku(new StockKeepingUnit(TestData.DefaultProduct()));
+        workOrder.AssignSku(new StockKeepingUnit(TestData.DefaultProduct()));
+
+        // Act
+        var response = workOrder.Cancel(DefaultUserName);
+
+        // Assert — cancelled orders hold no stock; the units return to the free pool
+        Assert.True(response.Success);
+        Assert.Empty(workOrder.AssignedStock);
+    }
+
+    [Fact]
+    public void WorkOrders_CancellationRecordsHistory()
+    {
+        // Arrange
+        var workOrder = new WorkOrder(DefaultUserName, TestData.DefaultProduct(), 5);
+        var historyCountBefore = workOrder.StateHistory.Count;
+
+        // Act
+        workOrder.Cancel("Cancelling Clerk", "customer withdrew order");
+
+        // Assert
+        Assert.Equal(historyCountBefore + 1, workOrder.StateHistory.Count);
+        var lastEntry = workOrder.StateHistory.Last();
+        Assert.Equal(WorkOrderStatus.Cancelled, lastEntry.Status);
+        Assert.Equal("Cancelling Clerk", lastEntry.CompletedBy);
+        Assert.Equal("customer withdrew order", lastEntry.Notes);
+    }
+
     [Fact]
     public void WorkOrders_CanAssignCorrectProduct()
     {

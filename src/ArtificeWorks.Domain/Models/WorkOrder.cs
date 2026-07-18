@@ -29,6 +29,15 @@ public class WorkOrder
             WorkOrderStatus.Fault
         };
 
+    // Business-terminal states: the order is finished and no further lifecycle
+    // command may move it. Fault is deliberately NOT terminal — it is a stuck
+    // error state, so it stays cancellable as an escape hatch (see Cancel).
+    private readonly ICollection<WorkOrderStatus> _terminalStatuses = new HashSet<WorkOrderStatus>
+        {
+            WorkOrderStatus.Completed,
+            WorkOrderStatus.Cancelled
+        };
+
     private WorkOrder() { }
 
     public WorkOrder(string createdBy, Product item, uint qty, string? notes = null)
@@ -60,9 +69,9 @@ public class WorkOrder
 
     public TransitionResult AdvanceToNextStep(string createdBy, string? notes = null)
     {
-        if (CurrentStatus == WorkOrderStatus.Completed)
+        if (_terminalStatuses.Contains(CurrentStatus))
         {
-            return TransitionResult.Rejected("Work order is already Completed and cannot be advanced further.");
+            return TransitionResult.Rejected($"Work order is {CurrentStatus} and cannot be advanced further.");
         }
         if (!CanAdvance())
         {
@@ -79,6 +88,10 @@ public class WorkOrder
 
     public TransitionResult SetHold(string createdBy, string? notes = null)
     {
+        if (_terminalStatuses.Contains(CurrentStatus))
+        {
+            return TransitionResult.Rejected($"Work order is {CurrentStatus} and cannot be held.");
+        }
         if (_holdStatuses.Contains(CurrentStatus))
         {
             return TransitionResult.Rejected($"Work order is already {CurrentStatus} and cannot be held again.");
@@ -97,6 +110,24 @@ public class WorkOrder
         }
         CurrentStatus = PreviousStatus.Value;
         PreviousStatus = null;
+        UpdateStateHistory(createdBy, notes);
+        return TransitionResult.Ok();
+    }
+
+    public TransitionResult Cancel(string createdBy, string? notes = null)
+    {
+        if (_terminalStatuses.Contains(CurrentStatus))
+        {
+            return TransitionResult.Rejected($"Work order is {CurrentStatus} and cannot be cancelled.");
+        }
+
+        // A cancelled order must hold no physical stock. There is no separate
+        // inventory aggregate yet, so "returning" stock means detaching the
+        // serialized units from this order, freeing them for reassignment.
+        _assignedStock.Clear();
+
+        PreviousStatus = CurrentStatus;
+        CurrentStatus = WorkOrderStatus.Cancelled;
         UpdateStateHistory(createdBy, notes);
         return TransitionResult.Ok();
     }

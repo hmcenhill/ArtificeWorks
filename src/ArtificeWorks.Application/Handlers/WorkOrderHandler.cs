@@ -38,6 +38,9 @@ public class WorkOrderHandler
     public Task<WorkOrderCommandResponse> ReleaseWorkOrder(Guid id, WorkOrderCommandRequest request)
         => ExecuteCommand(id, wo => wo.ReleaseHold(request.CreatedBy, request.Notes));
 
+    public Task<WorkOrderCommandResponse> CancelWorkOrder(Guid id, WorkOrderCommandRequest request)
+        => ExecuteCommand(id, wo => wo.Cancel(request.CreatedBy, request.Notes));
+
     private async Task<WorkOrderCommandResponse> ExecuteCommand(Guid id, Func<WorkOrder, TransitionResult> command)
     {
         var workOrder = await _workOrderRepository.GetWithHistory(id);

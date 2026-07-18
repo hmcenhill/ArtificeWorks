@@ -47,6 +47,17 @@ public class WorkOrderController(WorkOrderHandler workOrderHandler) : Controller
     public async Task<ActionResult<WorkOrderDto>> Release(Guid id, [FromBody] WorkOrderCommandRequest request)
         => MapCommandResult(await _workOrderHandler.ReleaseWorkOrder(id, request));
 
+    /// <summary>
+    /// Cancels a work order. Cancellation is terminal and releases any stock the
+    /// order had assigned. It is allowed from any state except the terminal ones
+    /// (<c>Completed</c> and <c>Cancelled</c>); attempting to cancel those returns
+    /// 409 Conflict. A faulted order can still be cancelled — it is an escape hatch
+    /// out of the stuck Fault state.
+    /// </summary>
+    [HttpPost("{id:guid}/cancel")]
+    public async Task<ActionResult<WorkOrderDto>> Cancel(Guid id, [FromBody] WorkOrderCommandRequest request)
+        => MapCommandResult(await _workOrderHandler.CancelWorkOrder(id, request));
+
     private ActionResult<WorkOrderDto> MapCommandResult(WorkOrderCommandResponse response) => response.Outcome switch
     {
         WorkOrderCommandOutcome.Success => Ok(response.WorkOrder),
