@@ -28,6 +28,13 @@ This is where the factory starts behaving like a factory — and where the class
 - [ ] Concurrent work orders cannot reserve the same stock twice
 - [ ] Duplicate deliveries of the same event have no additional effect
 
+## Stories
+
+- [5.1 — BOM and component inventory model](5.1.md)
+- [5.2 — Material picking consumer (happy path)](5.2.md)
+- [5.3 — Insufficient stock and concurrency-safe reservation](5.3.md)
+- [5.4 — Idempotent consumption](5.4.md)
+
 ## Notes
 
 Seed the catalog so the Custodian, Delver, and Courier share most components — the "70% shared BOM" from the company pitch should be literally true in the data, because Epic 11's dashboard will visualize it.

@@ -2,7 +2,7 @@
 
 > **Protocol (for Claude):** This is the living hub between conversations. Before the conversation ends, if anything changed: update *Current state*, *Next up*, and *Open decisions*; add a one-line entry to the *Log*; prune anything no longer true. Keep this file under ~80 lines — when a decision becomes permanent, move it to `docs/` (architecture.md or the relevant epic) and drop it from here. Commit this file with the work it describes.
 
-**Last updated:** 2026-07-18 (story 4.3)
+**Last updated:** 2026-07-18 (Epic 5 groomed)
 
 ## Current state
 
@@ -16,7 +16,7 @@
 
 ## Next up
 
-1. **Epic 5 — Material picking workflow.** First real workflow riding the backbone: workers consume `WorkOrderScheduled` and drive BOM-driven material picking. Groom the Epic 5 stories (only `EPIC_5.md` exists so far — story files are written just-in-time). This is where the `WorkOrderScheduledHandler` stand-in gets replaced with real behaviour.
+1. **Epic 5 — Material picking workflow. Stories now groomed** (5.1–5.4 in the epic folder), pipeline-first arc: **5.1** BOM + component inventory model & shared-platform seed (domain/data only, no messaging); **5.2** happy-path picking consumer — replaces the `WorkOrderScheduledHandler` stand-in, reserves per BOM, emits `MaterialsReserved` for Epic 6; **5.3** all-or-nothing reservation + insufficient-stock → OnHold + concurrency safety (recommended: atomic conditional decrement, no aggregate rowversion); **5.4** idempotent consumption (recommended: unique constraint on `MaterialReservation.WorkOrderId` as the dedupe key). Each story carries a **Decisions (to confirm at story start)** block — review/lock those before starting 5.1. **Start with 5.1.**
 2. **Small follow-ups worth folding in when convenient:** map `WorkOrderStateHistory.CompletedBy` + migration (see Open decisions); the AMQP `IncludeScopes` appsettings path vs code (documented in the 4.3 log).
 
 ## Open decisions
@@ -34,6 +34,7 @@
 
 ## Log
 
+- **2026-07-18** — Groomed Epic 5 into four story files (5.1–5.4) + Stories index in `EPIC_5.md`. Pipeline-first arc: model+seed → happy-path picking → insufficient-stock/concurrency → idempotency. Each maps to the epic's acceptance criteria and carries a proposed-decisions block. New entities proposed: `Component` (on-hand inventory, distinct from `Product`), `BomLine`, `MaterialReservation` (per-order pick record, also the idempotency key).
 - **2026-07-18** — Story 4.3: correlation into log scopes + topology doc (Epic 4 complete). Shared `CorrelationLog.BeginCorrelationScope` (message-template scope → readable console + structured `CorrelationId` field); middleware opens it per request, consumer per delivery from the AMQP `correlation_id`. `AddSimpleConsole(IncludeScopes)` in both hosts. `docs/messaging-topology.md` + README link. `CorrelationMiddlewareTests`. Verified live: one grep spans both services. 76 tests green.
 - **2026-07-18** — Story 4.2: worker consumption + dispatch. Workers → Generic Host consuming `artifice.events`; `IIntegrationEventHandler<T>` + `EventDispatcher` + `RabbitMqConsumerService` (manual acks, nack `requeue:false`); `WorkOrderScheduledHandler` appends a state-history note via new `WorkOrder.AppendNote`. Extracted `AddRabbitMqConnection`. Real publish→consume E2E (`WorkerConsumerTests`, Testcontainers RabbitMQ+Postgres). Flagged unmapped `CompletedBy`. 73 tests green.
 - **2026-07-18** — Story 4.1: event contracts + RabbitMQ publisher (first async plumbing). `EventEnvelope<T>` + `WorkOrderCreated`/`WorkOrderScheduled` in Application; `RabbitMqConnection`/`RabbitMqEventPublisher` + direct exchange `artifice.events` in Infrastructure; correlation middleware in Api; handler publishes best-effort after commit. Verified end-to-end against a live broker. 72 tests green.
