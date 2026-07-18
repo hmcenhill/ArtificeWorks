@@ -12,7 +12,13 @@
       "Bash(git commit -q -m 'Rename OrderProcessing to ArtificeWorks across solution *)",
       "Bash(git -c core.safecrlf=false commit -q -m 'Rewrite project plan for the ArtificeWorks manufacturing system *)",
       "Bash(dotnet ef *)",
-      "PowerShell(docker info --format '{{.ServerVersion}}' 2>&1)"
+      "PowerShell(docker info --format '{{.ServerVersion}}' 2>&1)",
+      "Bash(dotnet add *)",
+      "Bash(rm src/ArtificeWorks.Api/Configuration/RabbitMqConfig.cs)",
+      "Bash(docker compose *)",
+      "Bash(curl -s __TRACKED_VAR__/exchanges/%2f/artifice.events)",
+      "Bash(curl -s -D - -o /dev/null -X POST __TRACKED_VAR__/work-orders/__TRACKED_VAR__/advance -H 'Content-Type: application/json' -H 'X-Correlation-ID: __TRACKED_VAR__' -d '{\"createdBy\":\"verify\",\"notes\":\"advancing to scheduled\"}')",
+      "Bash(curl -s -X DELETE __TRACKED_VAR__/queues/%2f/verify-scheduled -o /dev/null -w 'delete-verify-queue: %{http_code}\\\\n')"
     ]
   }
 }

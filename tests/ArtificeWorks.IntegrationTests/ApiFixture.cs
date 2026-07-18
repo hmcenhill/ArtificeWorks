@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
+using ArtificeWorks.Application.Messaging;
 using ArtificeWorks.Infrastructure.Persistence;
 
 using Testcontainers.PostgreSql;
@@ -36,6 +37,16 @@ public class ApiFixture : IAsyncLifetime
                     }
 
                     services.AddDbContext<ArtificeWorksDbContext>(options => options.UseNpgsql(_container.GetConnectionString()));
+
+                    // These tests assert HTTP + persistence, not messaging: replace the
+                    // RabbitMQ publisher with a no-op so no broker is required (4.2 covers
+                    // the real publish→consume path).
+                    var publisherRegistration = services.SingleOrDefault(d => d.ServiceType == typeof(IEventPublisher));
+                    if (publisherRegistration is not null)
+                    {
+                        services.Remove(publisherRegistration);
+                    }
+                    services.AddScoped<IEventPublisher, NoOpEventPublisher>();
                 });
             });
 

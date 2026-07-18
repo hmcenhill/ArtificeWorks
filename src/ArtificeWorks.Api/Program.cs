@@ -4,15 +4,19 @@ using Microsoft.EntityFrameworkCore;
 
 using ArtificeWorks.Api.Configuration;
 using ArtificeWorks.Api.Errors;
+using ArtificeWorks.Api.Middleware;
 using ArtificeWorks.Application.Handlers;
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Infrastructure.Data;
+using ArtificeWorks.Infrastructure.Messaging;
 using ArtificeWorks.Infrastructure.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.Configure<RabbitMqConfiguration>(builder.Configuration.GetSection(nameof(RabbitMqConfiguration)));
 builder.Services.Configure<RedisConfiguration>(builder.Configuration.GetSection(nameof(RedisConfiguration)));
+
+// RabbitMQ connection, event publisher, and per-request correlation context.
+builder.Services.AddRabbitMqMessaging(builder.Configuration);
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
@@ -68,6 +72,10 @@ var app = builder.Build();
 // Turns unhandled exceptions into a ProblemDetails 500 (code `internal_error` is
 // added by the handler below) instead of leaking a stack trace.
 app.UseExceptionHandler();
+
+// Establish the correlation id per request before any handler runs so published
+// events and (in 4.3) log scopes carry it.
+app.UseMiddleware<CorrelationMiddleware>();
 
 if (app.Environment.IsDevelopment())
 {
