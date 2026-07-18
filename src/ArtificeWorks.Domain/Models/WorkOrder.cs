@@ -138,6 +138,14 @@ public class WorkOrder
         return TransitionResult.Ok();
     }
 
+    /// <summary>
+    /// Records an annotation against the order at its <em>current</em> status without
+    /// changing state — an audit "touch". Used by async consumers to leave a trace that
+    /// they processed an event (e.g. the Epic 4.2 worker acknowledging a scheduling
+    /// event) so the effect of a consumed message is observable in the state history.
+    /// </summary>
+    public void AppendNote(string recordedBy, string note) => UpdateStateHistory(recordedBy, note);
+
     private void UpdateStateHistory(string createdBy, string? notes = null)
     {
         UpdatedUtc = DateTime.UtcNow;
