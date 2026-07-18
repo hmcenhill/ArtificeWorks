@@ -1,10 +1,9 @@
+using System.Net;
 using System.Net.Http.Json;
-using System.Text.Json;
-
-using Microsoft.AspNetCore.Mvc;
 
 using ArtificeWorks.Application.Commands;
 using ArtificeWorks.Application.Data;
+using ArtificeWorks.Domain.Models;
 
 namespace ArtificeWorks.IntegrationTests;
 
@@ -74,7 +73,7 @@ public class WorkOrderApiTests : IClassFixture<ApiFixture>
 
         // Assert — reason code, not error string (the wire contract)
         Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Equal("product_not_found", await ReadProblemCode(response));
+        Assert.Equal("product_not_found", await response.ReadProblemCodeAsync());
     }
 
     [Fact]
@@ -98,7 +97,7 @@ public class WorkOrderApiTests : IClassFixture<ApiFixture>
 
         // Assert
         Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Equal("validation_failed", await ReadProblemCode(response));
+        Assert.Equal("validation_failed", await response.ReadProblemCodeAsync());
     }
 
     [Fact]
@@ -139,7 +138,7 @@ public class WorkOrderApiTests : IClassFixture<ApiFixture>
 
         // Assert
         Assert.Equal(System.Net.HttpStatusCode.NotFound, response.StatusCode);
-        Assert.Equal("work_order_not_found", await ReadProblemCode(response));
+        Assert.Equal("work_order_not_found", await response.ReadProblemCodeAsync());
     }
 
     [Fact]
@@ -235,7 +234,7 @@ public class WorkOrderApiTests : IClassFixture<ApiFixture>
 
         // Assert
         Assert.Equal(System.Net.HttpStatusCode.Conflict, response.StatusCode);
-        Assert.Equal("not_held", await ReadProblemCode(response));
+        Assert.Equal("not_held", await response.ReadProblemCodeAsync());
     }
 
     [Fact]
@@ -280,7 +279,7 @@ public class WorkOrderApiTests : IClassFixture<ApiFixture>
 
         // Assert
         Assert.Equal(System.Net.HttpStatusCode.Conflict, response.StatusCode);
-        Assert.Equal("terminal_state", await ReadProblemCode(response));
+        Assert.Equal("terminal_state", await response.ReadProblemCodeAsync());
     }
 
     [Fact]
@@ -293,7 +292,7 @@ public class WorkOrderApiTests : IClassFixture<ApiFixture>
 
         // Assert
         Assert.Equal(System.Net.HttpStatusCode.NotFound, response.StatusCode);
-        Assert.Equal("work_order_not_found", await ReadProblemCode(response));
+        Assert.Equal("work_order_not_found", await response.ReadProblemCodeAsync());
     }
 
     [Fact]
@@ -305,24 +304,161 @@ public class WorkOrderApiTests : IClassFixture<ApiFixture>
             new WorkOrderCommandRequest { CreatedBy = "Line Lead" });
 
         // Assert
-        Assert.Equal(System.Net.HttpStatusCode.NotFound, response.StatusCode);
-        Assert.Equal("work_order_not_found", await ReadProblemCode(response));
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal("work_order_not_found", await response.ReadProblemCodeAsync());
     }
 
-    /// <summary>
-    /// Reads the machine-readable <c>code</c> extension from an RFC 7807
-    /// ProblemDetails error body — the stable contract consumers branch on.
-    /// </summary>
-    private static async Task<string?> ReadProblemCode(HttpResponseMessage response)
+    [Fact]
+    public async Task GetWorkOrderHistory_MissingOrder_ReturnsNotFound()
     {
-        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
-        if (problem is not null
-            && problem.Extensions.TryGetValue("code", out var value)
-            && value is JsonElement element)
+        // Act
+        var response = await _fixture.Client.GetAsync($"/work-orders/{Guid.NewGuid()}/history");
+
+        // Assert
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal("work_order_not_found", await response.ReadProblemCodeAsync());
+    }
+
+    [Fact]
+    public async Task HoldWorkOrder_AlreadyHeld_ReturnsConflictWithReason()
+    {
+        // Arrange — hold once
+        var created = await CreateWorkOrder("Item-Hold-Twice-001");
+        await _fixture.Client.PostAsJsonAsync(
+            $"/work-orders/{created!.Id}/hold",
+            new WorkOrderCommandRequest { CreatedBy = "Line Lead" });
+
+        // Act — holding an already-held order is rejected
+        var response = await _fixture.Client.PostAsJsonAsync(
+            $"/work-orders/{created.Id}/hold",
+            new WorkOrderCommandRequest { CreatedBy = "Line Lead" });
+
+        // Assert
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal("already_held", await response.ReadProblemCodeAsync());
+    }
+
+    [Fact]
+    public async Task AdvanceWorkOrder_WhileHeld_ReturnsConflictWithReason()
+    {
+        // Arrange — put the order on hold
+        var created = await CreateWorkOrder("Item-Advance-Held-001");
+        await _fixture.Client.PostAsJsonAsync(
+            $"/work-orders/{created!.Id}/hold",
+            new WorkOrderCommandRequest { CreatedBy = "Line Lead" });
+
+        // Act — a held order must be released before it can advance
+        var response = await _fixture.Client.PostAsJsonAsync(
+            $"/work-orders/{created.Id}/advance",
+            new WorkOrderCommandRequest { CreatedBy = "Line Lead" });
+
+        // Assert
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal("must_release_first", await response.ReadProblemCodeAsync());
+    }
+
+    [Fact]
+    public async Task FullLifecycle_AdvancesThroughEveryStageToCompleted()
+    {
+        // Arrange
+        var created = await CreateWorkOrder("Item-Lifecycle-001");
+
+        // The manufacturing pipeline in order, each reached by one advance from Intake.
+        var pipeline = new[]
         {
-            return element.GetString();
+            WorkOrderStatus.Scheduled,
+            WorkOrderStatus.InProcess,
+            WorkOrderStatus.Inspection,
+            WorkOrderStatus.Delivery,
+            WorkOrderStatus.Completed
+        };
+
+        // Act + Assert — advance one stage at a time, asserting the new status and
+        // that history grows by exactly one entry per step.
+        var expectedHistoryCount = 1; // Intake, recorded at creation
+        foreach (var expectedStatus in pipeline)
+        {
+            var response = await _fixture.Client.PostAsJsonAsync(
+                $"/work-orders/{created!.Id}/advance",
+                new WorkOrderCommandRequest { CreatedBy = "Line Lead", Notes = $"-> {expectedStatus}" });
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var dto = await response.Content.ReadFromJsonAsync<WorkOrderDto>();
+            Assert.Equal(expectedStatus, dto!.Status);
+
+            expectedHistoryCount++;
+            var history = await _fixture.Client.GetFromJsonAsync<WorkOrderHistoryDto>(
+                $"/work-orders/{created.Id}/history");
+            Assert.Equal(expectedHistoryCount, history!.History.Count);
+            Assert.Equal(expectedStatus, history.History.Last().Status);
         }
-        return null;
+
+        // Assert — the persisted history is the full ordered walk, Intake first.
+        var finalHistory = await _fixture.Client.GetFromJsonAsync<WorkOrderHistoryDto>(
+            $"/work-orders/{created!.Id}/history");
+        Assert.Equal(
+            new[]
+            {
+                WorkOrderStatus.Intake,
+                WorkOrderStatus.Scheduled,
+                WorkOrderStatus.InProcess,
+                WorkOrderStatus.Inspection,
+                WorkOrderStatus.Delivery,
+                WorkOrderStatus.Completed
+            },
+            finalHistory!.History.Select(h => h.Status));
+
+        // Assert — a completed order is terminal; advancing again is rejected.
+        var terminal = await _fixture.Client.PostAsJsonAsync(
+            $"/work-orders/{created.Id}/advance",
+            new WorkOrderCommandRequest { CreatedBy = "Line Lead" });
+        Assert.Equal(HttpStatusCode.Conflict, terminal.StatusCode);
+        Assert.Equal("terminal_state", await terminal.ReadProblemCodeAsync());
+    }
+
+    [Fact]
+    public async Task ConcurrentCreate_PersistsEveryOrderExactlyOnce()
+    {
+        // Arrange — one shared product, many simultaneous work orders against it.
+        await _fixture.Client.PostAsJsonAsync("/products", new CreateProductRequest
+        {
+            Requestor = "John Tester",
+            ProductId = "Item-Concurrent-001",
+            ProductName = "Concurrency Test Product"
+        });
+
+        const int concurrency = 20;
+        var request = new CreateWorkOrderRequest
+        {
+            Requestor = "Jane Tester",
+            ItemId = "Item-Concurrent-001",
+            Qty = 1
+        };
+
+        // Act — fire all creates at once, each on its own request scope/DbContext.
+        var responses = await Task.WhenAll(
+            Enumerable.Range(0, concurrency)
+                .Select(_ => _fixture.Client.PostAsJsonAsync("/work-orders", request)));
+
+        // Assert — every request created a distinct order (no lost writes)...
+        Assert.All(responses, r => Assert.Equal(HttpStatusCode.Created, r.StatusCode));
+        var ids = new List<Guid>();
+        foreach (var r in responses)
+        {
+            var dto = await r.Content.ReadFromJsonAsync<WorkOrderDto>();
+            ids.Add(dto!.Id);
+        }
+        Assert.Equal(concurrency, ids.Distinct().Count());
+
+        // ...and each persisted order has exactly one Intake history entry — no
+        // cross-talk or duplicated history between the concurrent writes.
+        foreach (var id in ids)
+        {
+            var history = await _fixture.Client.GetFromJsonAsync<WorkOrderHistoryDto>(
+                $"/work-orders/{id}/history");
+            var entry = Assert.Single(history!.History);
+            Assert.Equal(WorkOrderStatus.Intake, entry.Status);
+        }
     }
 
     private async Task<WorkOrderDto?> CreateWorkOrder(string productId)
