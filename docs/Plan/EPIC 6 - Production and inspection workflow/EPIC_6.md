@@ -1,30 +1,75 @@
 ## [EPIC] Production and inspection workflow
 
-**Labels:** epic, messaging, backend
+**Labels:** epic, messaging, backend, domain
 **Milestone:** M4
 
 ## Summary
 
-The middle of the pipeline: picked work orders move through production (InProcess) and quality inspection, with pass/fail outcomes.
+The middle of the pipeline: picked work orders move through production (InProcess) and quality inspection, with per-unit pass/fail outcomes and a scrap-and-rebuild loop for failures.
 
 ## Why
 
-Production and inspection give the lifecycle its substance and introduce the first *legitimate* failure path — a unit that fails inspection — which the Fault state has been waiting for.
+Production and inspection give the lifecycle its substance and introduce the first *legitimate* failure path — a unit that fails inspection — which the Fault state has been waiting for. It is also the first stage that can run **more than once per work order**, which breaks the neat idempotency trick Epic 5 got away with and forces a real dedupe design.
 
 ## Scope
 
-- Production consumer: picked work orders enter InProcess; completion is event-driven (timed/simulated for now; the real simulation engine arrives in Epic 10)
-- Per-unit build tracking: each `StockKeepingUnit` produced is serialized and assigned to the work order
-- Inspection stage: units pass or fail; failures carry a reason
-- Fault semantics: define what a failed inspection does to the work order (rework? scrap and rebuild? partial completion?) and record it in state history
+- Production consumer on `work-order.materials-reserved`: advance Scheduled → InProcess, build the ordered quantity as serialized units, publish completion
+- Per-unit build tracking: each `StockKeepingUnit` produced is serialized, owned by the work order, and carries its own state
+- Inspection stage: each unit passes or fails independently; failures carry a reason
+- Scrap and rebuild: failed units are scrapped, the order returns to InProcess, and only the shortfall is rebuilt — the order advances to Delivery only at full passing quantity
+- Rebuild cap: too many failed attempts routes the order to Fault, recoverably
+- Idempotent consumption for stages that legitimately repeat
+
+## The shape of it
+
+The rebuild loop is a genuine cycle over the bus, not a method call:
+
+```mermaid
+flowchart LR
+    mr(["work-order.<br/>materials-reserved"]) --> prod["production<br/>consumer"]
+    rr(["work-order.<br/>rework-required"]) --> prod
+    prod --> pc(["work-order.<br/>production-completed"])
+    pc --> insp["inspection<br/>consumer"]
+    insp -->|shortfall| rr
+    insp -->|full qty passed| ip(["work-order.<br/>inspection-passed"])
+    insp -->|cap exceeded| f(["work-order.faulted"])
+    ip -.->|Epic 7| ship["shipping"]
+```
+
+Each subscriber binds the exact routing keys it acts on — the outcome *is* the routing key, so no consumer has to receive an event and then decide the event wasn't for it. This is the direct exchange doing the job [docs/messaging-topology.md](../../messaging-topology.md) argues for.
 
 ## Acceptance Criteria
 
 - [ ] Picked work orders progress through InProcess via events
-- [ ] Inspection produces explicit pass/fail outcomes with reasons
-- [ ] Failed inspections route the work order to a defined, recoverable path
+- [ ] Every ordered unit exists as a serialized `StockKeepingUnit` owned by the work order, with its own state
+- [ ] Inspection produces explicit per-unit pass/fail outcomes with reasons
+- [ ] Failed inspections route the work order to a defined, recoverable path (scrap → rebuild shortfall → re-inspect)
+- [ ] A work order reaches Delivery only when the full ordered quantity has passed inspection
+- [ ] Repeated rebuild failures land the order in Fault rather than looping forever
+- [ ] Redelivery of any production or inspection event has no additional effect
 - [ ] Every stage transition appears in the work order's state history
+
+## Stories
+
+- [6.1 — Serialized units and the production consumer](6.1.md)
+- [6.2 — Inspection stage and per-unit verdicts](6.2.md)
+- [6.3 — Scrap, rebuild, and the Fault cap](6.3.md)
+- [6.4 — Idempotent consumption for repeating stages](6.4.md)
+
+## Decisions taken at grooming
+
+Interviewed and settled before the stories were written:
+
+- **Per-unit scrap and rebuild.** Units pass or fail independently. A failed unit is scrapped with a reason; the order returns to InProcess and rebuilds *only the shortfall*, advancing to Delivery when the full quantity has passed. Fault is not used for a normal inspection failure — see the cap below.
+- **Inspection is per serialized unit**, not per order. This is what makes serialization mean something, and it gives Epic 12's "fail an inspection" injection a specific target.
+- **Production completes instantly** in this epic. No timers, no delays, no `due at` sweeper — Epic 10's simulation engine owns pacing. Epic 6 is about state and events; adding a sleeping handler now would also block the single prefetch-1 consumer for no benefit.
+- **Verdicts come from a configurable auto-inspector plus an API override.** Failure rate defaults to `0.0` (everything passes) so the unattended pipeline flows; a `POST` endpoint records a verdict by hand, which is the visitor's decision moment and the hook Epic 12 reuses instead of inventing a back door.
+- **Rebuild attempts are capped** (configurable, default 3). Exceeding the cap sends the order to Fault with the scrap history as the reason — the first legitimate use of Fault, and it is already releasable and cancellable.
+
+## Open questions
+
+- **Do rebuilds consume new materials?** Physically they should — a scrapped unit burns its parts. But Epic 5 made `material_reservations.WorkOrderId` **unique** as its idempotency key, so a second pick for the same order is impossible without reopening 5.4's design and paying for a migration. The stories are written assuming **rebuilds consume nothing new**; 6.3 carries this as the decision to settle at implementation time. Deferring to Epic 13 (deep domain) is the likely answer.
 
 ## Notes
 
-Decide the rework model here deliberately — it's the most interesting domain decision in the pipeline and worth writing up for the portfolio (Epic 16).
+The rework model is the most interesting domain decision in the pipeline and is worth writing up for the portfolio (Epic 16) — including the idempotency consequence in 6.4, which is a better story than Epic 5's precisely because the easy trick doesn't work.
