@@ -15,6 +15,12 @@ public class ApiFixture : IAsyncLifetime
     private WebApplicationFactory<Program> _factory;
     public HttpClient Client { get; private set; } = null!;
 
+    /// <summary>
+    /// The API's own container, so a test can arrange state the API has no endpoint for —
+    /// notably running production, which is only ever triggered by an event.
+    /// </summary>
+    public IServiceProvider Services => _factory.Services;
+
     public ApiFixture()
     {
         _container = new PostgreSqlBuilder("postgres:15.1").Build();

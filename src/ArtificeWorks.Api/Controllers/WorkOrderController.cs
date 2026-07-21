@@ -4,6 +4,7 @@ using ArtificeWorks.Api.Errors;
 using ArtificeWorks.Application.Commands;
 using ArtificeWorks.Application.Data;
 using ArtificeWorks.Application.Handlers;
+using ArtificeWorks.Application.Inspection;
 
 namespace ArtificeWorks.Api.Controllers;
 
@@ -11,9 +12,10 @@ namespace ArtificeWorks.Api.Controllers;
 [Route("work-orders")]
 [Produces("application/json")]
 [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
-public class WorkOrderController(WorkOrderHandler workOrderHandler) : ApiControllerBase
+public class WorkOrderController(WorkOrderHandler workOrderHandler, InspectionService inspection) : ApiControllerBase
 {
     private readonly WorkOrderHandler _workOrderHandler = workOrderHandler;
+    private readonly InspectionService _inspection = inspection;
 
     [HttpGet("{id:guid}")]
     [ProducesResponseType<WorkOrderDto>(StatusCodes.Status200OK)]
@@ -88,6 +90,43 @@ public class WorkOrderController(WorkOrderHandler workOrderHandler) : ApiControl
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
     public async Task<ActionResult<WorkOrderDto>> Cancel(Guid id, [FromBody] WorkOrderCommandRequest request)
         => MapCommandResult(await _workOrderHandler.CancelWorkOrder(id, request));
+
+    /// <summary>
+    /// Records an inspection verdict for one serialized unit by hand — the alternative to the
+    /// automatic inspector, and the same path Epic 12's failure injection will use rather than
+    /// a back door of its own.
+    /// <para>
+    /// The order must be in Inspection (409 <c>order_not_in_inspection</c>), the serial number
+    /// must belong to it (404 <c>unit_not_found</c>), and a unit may only be judged once
+    /// (409 <c>unit_already_inspected</c> — the clean resolution when the auto-inspector got
+    /// there first). A verdict that completes the attempt resolves the order exactly as the
+    /// automatic path does: to Delivery, back to production, or to Fault.
+    /// </para>
+    /// </summary>
+    [HttpPost("{id:guid}/inspections")]
+    [ProducesResponseType<WorkOrderDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<WorkOrderDto>> RecordVerdict(Guid id, [FromBody] RecordVerdictRequest request)
+    {
+        var result = await _inspection.RecordVerdict(
+            id, request.SerialNumber, request.Passed, request.Reason, request.CreatedBy);
+
+        return result.Outcome switch
+        {
+            VerdictOutcome.Recorded => Ok(await _workOrderHandler.GetWorkOrder(id)),
+            VerdictOutcome.WorkOrderNotFound
+                => Problem(StatusCodes.Status404NotFound, ProblemCodes.WorkOrderNotFound, result.Summary),
+            VerdictOutcome.UnitNotFound
+                => Problem(StatusCodes.Status404NotFound, ProblemCodes.UnitNotFound, result.Summary),
+            VerdictOutcome.NotInInspection
+                => Problem(StatusCodes.Status409Conflict, ProblemCodes.OrderNotInInspection, result.Summary),
+            VerdictOutcome.AlreadyInspected
+                => Problem(StatusCodes.Status409Conflict, ProblemCodes.UnitAlreadyInspected, result.Summary),
+            // A missing scrap reason is a malformed request, not a state conflict.
+            _ => Problem(StatusCodes.Status400BadRequest, ProblemCodes.ScrapReasonRequired, result.Summary)
+        };
+    }
 
     private ActionResult<WorkOrderDto> MapCommandResult(WorkOrderCommandResponse response) => response.Outcome switch
     {

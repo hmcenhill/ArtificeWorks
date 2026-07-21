@@ -4,6 +4,7 @@ using ArtificeWorks.Application.Messaging.Events;
 using ArtificeWorks.Infrastructure.Data;
 using ArtificeWorks.Infrastructure.Messaging;
 using ArtificeWorks.Infrastructure.Persistence;
+using ArtificeWorks.Infrastructure.Workflow;
 using ArtificeWorks.Workers.Consuming;
 using ArtificeWorks.Workers.Handlers;
 
@@ -31,6 +32,9 @@ builder.Services.AddScoped<IMaterialReservationRepository, MaterialReservationRe
 // The material-picking workflow (Epic 5) — the worker's real work.
 builder.Services.AddScoped<MaterialPickingService>();
 
+// Production + inspection (Epic 6): the middle of the pipeline, including the rework cycle.
+builder.Services.AddProductionAndInspection(builder.Configuration);
+
 // Full messaging: the worker now publishes too (MaterialsReserved hands the pipeline to
 // production), so it needs the publisher and a correlation context, not just the connection.
 // The handler sets the correlation id per message from the inbound envelope.
@@ -40,6 +44,12 @@ builder.Services.AddRabbitMqMessaging(builder.Configuration);
 // consume a new event type — the consumer and dispatcher stay untouched.
 builder.Services.AddEventConsumer();
 builder.Services.AddEventHandler<WorkOrderScheduled, WorkOrderScheduledHandler>();
+
+// Epic 6. Note the cycle: rework-required is published by this same process and consumed by
+// it, so the rebuild loop really does go out over the broker and come back.
+builder.Services.AddEventHandler<MaterialsReserved, MaterialsReservedHandler>();
+builder.Services.AddEventHandler<ProductionCompleted, ProductionCompletedHandler>();
+builder.Services.AddEventHandler<ReworkRequired, ReworkRequiredHandler>();
 
 var host = builder.Build();
 host.Run();

@@ -9,6 +9,7 @@ using ArtificeWorks.Domain.Models.Materials;
 using ArtificeWorks.Infrastructure.Data;
 using ArtificeWorks.Infrastructure.Messaging;
 using ArtificeWorks.Infrastructure.Persistence;
+using ArtificeWorks.Infrastructure.Workflow;
 using ArtificeWorks.Workers.Consuming;
 using ArtificeWorks.Workers.Handlers;
 
@@ -25,21 +26,23 @@ using Testcontainers.RabbitMq;
 namespace ArtificeWorks.IntegrationTests;
 
 /// <summary>
-/// The whole async pipeline against real infrastructure: the API-side publisher emits
-/// <see cref="WorkOrderScheduled"/>, the hosted worker consumes it, picks the product's BOM
-/// out of inventory, and publishes <see cref="MaterialsReserved"/> back onto the bus for
-/// Epic 6's production stage. Requires Docker (Testcontainers RabbitMQ + Postgres).
+/// The whole async pipeline against real infrastructure. The API-side publisher emits
+/// <see cref="WorkOrderScheduled"/>; from there the worker alone carries the order through
+/// picking, production and inspection to Delivery, each stage triggered by an event the
+/// previous one published. Requires Docker (Testcontainers RabbitMQ + Postgres).
 /// <para>
-/// This test owns the <em>plumbing</em> claim — that a scheduled order triggers reservation
-/// via an event and not an API call. The reservation guarantees themselves (all-or-nothing,
-/// concurrency, idempotency) are proved in <see cref="MaterialPickingTests"/>, where they can
-/// actually be raced.
+/// This test owns the <em>plumbing</em> claim — that the pipeline really is driven by messages
+/// over a broker rather than by method calls. The workflow guarantees (all-or-nothing
+/// reservation, build-once, inspect-once) are proved in <see cref="MaterialPickingTests"/> and
+/// <see cref="ProductionInspectionTests"/>, where they can actually be raced: with prefetch 1
+/// on a single consumer, the broker path serializes deliveries and cannot demonstrate them.
 /// </para>
 /// </summary>
 public class WorkerConsumerTests : IAsyncLifetime
 {
     private const string Exchange = "artifice.events";
     private const string ObserverQueue = "test.materials-reserved.observer";
+    private const string PassedObserverQueue = "test.inspection-passed.observer";
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:15.1").Build();
     private readonly RabbitMqContainer _rabbit = new RabbitMqBuilder("rabbitmq:3.11").Build();
@@ -75,11 +78,19 @@ public class WorkerConsumerTests : IAsyncLifetime
         builder.Services.AddScoped<IMaterialReservationRepository, MaterialReservationRepository>();
         builder.Services.AddScoped<MaterialPickingService>();
 
+        // Epic 6's workflow, registered exactly as the worker host registers it — including
+        // the shipped defaults, so this test exercises the configuration that actually ships
+        // (FailureRate 0.0: the factory runs unattended).
+        builder.Services.AddProductionAndInspection(builder.Configuration);
+
         // Full messaging (connection + publisher) so this test drives the REAL publish path,
-        // plus the consumption plumbing and the handler under test.
+        // plus the consumption plumbing and every handler in the pipeline.
         builder.Services.AddRabbitMqMessaging(builder.Configuration);
         builder.Services.AddEventConsumer();
         builder.Services.AddEventHandler<WorkOrderScheduled, WorkOrderScheduledHandler>();
+        builder.Services.AddEventHandler<MaterialsReserved, MaterialsReservedHandler>();
+        builder.Services.AddEventHandler<ProductionCompleted, ProductionCompletedHandler>();
+        builder.Services.AddEventHandler<ReworkRequired, ReworkRequiredHandler>();
 
         _host = builder.Build();
 
@@ -100,7 +111,7 @@ public class WorkerConsumerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Scheduling_an_order_makes_the_worker_pick_its_materials_and_announce_them()
+    public async Task Scheduling_an_order_carries_it_all_the_way_to_delivery_over_the_bus()
     {
         // Arrange — a product with a two-line BOM, stocked, and an order already Scheduled.
         var product = new Product("PRD-E2E", "End-to-end Automaton");
@@ -124,11 +135,12 @@ public class WorkerConsumerTests : IAsyncLifetime
 
         var scheduledKey = RoutingKeyOf(new WorkOrderScheduled(Guid.Empty, "", "", 0, default));
         var reservedKey = RoutingKeyOf(new MaterialsReserved(Guid.Empty, "", 0, [], default));
+        var passedKey = RoutingKeyOf(new InspectionPassed(Guid.Empty, "", [], default));
 
         // Declare + bind the worker's queue ourselves before publishing (idempotent with the
         // consumer's own declare) so the message can't be dropped by the direct exchange if
-        // the consumer hasn't finished binding yet — makes the test deterministic. The second
-        // queue is ours: it observes the event the worker publishes on the way out.
+        // the consumer hasn't finished binding yet — makes the test deterministic. The
+        // observer queues are ours: they watch events the worker publishes on the way through.
         using (var scope = _host.Services.CreateScope())
         {
             var connection = scope.ServiceProvider.GetRequiredService<IRabbitMqConnection>();
@@ -139,6 +151,9 @@ public class WorkerConsumerTests : IAsyncLifetime
 
             await channel.QueueDeclareAsync(ObserverQueue, durable: false, exclusive: false, autoDelete: false);
             await channel.QueueBindAsync(ObserverQueue, Exchange, reservedKey);
+
+            await channel.QueueDeclareAsync(PassedObserverQueue, durable: false, exclusive: false, autoDelete: false);
+            await channel.QueueBindAsync(PassedObserverQueue, Exchange, passedKey);
         }
 
         // Act — publish the real scheduling event through the real publisher.
@@ -184,24 +199,69 @@ public class WorkerConsumerTests : IAsyncLifetime
 
         // ...and the hand-off to production went back onto the bus, under the same
         // correlation id the original request carried.
-        var announced = await Poll(ReadReservedEvent);
+        var announced = await Poll(() => ReadEvent<MaterialsReserved>(ObserverQueue));
 
         Assert.NotNull(announced);
         Assert.Equal(workOrderId, announced!.Payload.WorkOrderId);
         Assert.Equal(correlationId, announced.CorrelationId);
         Assert.Equal(2, announced.Payload.Lines.Count);
+
+        // Nobody touched the API again: production and inspection were each triggered by the
+        // previous stage's event. The order should reach Delivery on its own.
+        var delivered = await Poll(async () =>
+        {
+            using var scope = _host.Services.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<ArtificeWorksDbContext>();
+            var order = await context.WorkOrders.AsNoTracking().SingleAsync(wo => wo.Id == workOrderId);
+            return order.CurrentStatus == WorkOrderStatus.Delivery ? order : null;
+        });
+
+        Assert.NotNull(delivered);
+        Assert.Equal(1, delivered!.BuildAttempt);
+
+        using (var scope = _host.Services.CreateScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<ArtificeWorksDbContext>();
+
+            // Both ordered units exist as serialized rows owned by the order, and both passed.
+            var units = await context.StockKeepingUnits.AsNoTracking()
+                .Where(unit => EF.Property<Guid>(unit, "work_order_id") == workOrderId)
+                .ToListAsync();
+
+            Assert.Equal(2, units.Count);
+            Assert.All(units, unit => Assert.Equal(UnitStatus.Passed, unit.Status));
+
+            // One production attempt, one inspection — the dedupe keys, written for real.
+            Assert.Equal(1, await context.ProductionRuns.CountAsync(run => run.WorkOrderId == workOrderId));
+            Assert.Equal(1, await context.InspectionRuns.CountAsync(run => run.WorkOrderId == workOrderId));
+
+            var history = await context.OrderStateHistory.AsNoTracking()
+                .Where(entry => entry.WorkOrderId == workOrderId)
+                .ToListAsync();
+            Assert.Single(history, entry => (entry.Notes ?? "").Contains("Production started"));
+            Assert.Single(history, entry => (entry.Notes ?? "").Contains("passed inspection"));
+        }
+
+        // The far end of the pipeline, waiting for Epic 7's shipping consumer — still under
+        // the correlation id the original HTTP request started with, four stages later.
+        var passed = await Poll(() => ReadEvent<InspectionPassed>(PassedObserverQueue));
+
+        Assert.NotNull(passed);
+        Assert.Equal(workOrderId, passed!.Payload.WorkOrderId);
+        Assert.Equal(correlationId, passed.CorrelationId);
+        Assert.Equal(2, passed.Payload.SerialNumbers.Count);
     }
 
-    private async Task<EventEnvelope<MaterialsReserved>?> ReadReservedEvent()
+    private async Task<EventEnvelope<T>?> ReadEvent<T>(string queue) where T : IntegrationEvent
     {
         using var scope = _host.Services.CreateScope();
         var connection = scope.ServiceProvider.GetRequiredService<IRabbitMqConnection>();
         await using var channel = await connection.CreateChannelAsync();
 
-        var message = await channel.BasicGetAsync(ObserverQueue, autoAck: true);
+        var message = await channel.BasicGetAsync(queue, autoAck: true);
         return message is null
             ? null
-            : JsonSerializer.Deserialize<EventEnvelope<MaterialsReserved>>(
+            : JsonSerializer.Deserialize<EventEnvelope<T>>(
                 message.Body.Span, new JsonSerializerOptions(JsonSerializerDefaults.Web));
     }
 

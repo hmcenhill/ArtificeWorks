@@ -231,7 +231,7 @@ public class WorkOrderTests
     }
 
     [Fact]
-    public void WorkOrders_CancellationReleasesAssignedStock()
+    public void WorkOrders_CancellationKeepsTheUnitsAlreadyBuilt()
     {
         // Arrange
         var workOrder = new WorkOrder(DefaultUserName, TestData.DefaultProduct(), 5);
@@ -241,9 +241,12 @@ public class WorkOrderTests
         // Act
         var response = workOrder.Cancel(DefaultUserName);
 
-        // Assert — cancelled orders hold no stock; the units return to the free pool
+        // Assert — units built for an order stay with it (6.1). Before Epic 6 they were
+        // detached here, on the reading that stock "returns" to a free pool; this factory
+        // builds to order, so there is no pool, and dropping them would erase the record of
+        // what was actually manufactured.
         Assert.True(response.Success);
-        Assert.Empty(workOrder.AssignedStock);
+        Assert.Equal(2, workOrder.AssignedStock.Count);
     }
 
     [Fact]

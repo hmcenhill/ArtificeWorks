@@ -17,5 +17,19 @@ public enum TransitionErrorCode
     AlreadyHeld,
 
     /// <summary>The order is not currently held, so there is nothing to release.</summary>
-    NotHeld
+    NotHeld,
+
+    /// <summary>The command is not legal from the order's current status (e.g. returning an
+    /// order to production when it is not in Inspection).</summary>
+    InvalidTransition,
+
+    /// <summary>
+    /// A production attempt arrived out of order — the requested attempt number is not the
+    /// one that comes next. Almost always a redelivered rework event; the unique constraint
+    /// on the production run is the actual guarantee, this is the cheap guard in front of it.
+    /// </summary>
+    AttemptOutOfSequence,
+
+    /// <summary>The serialized unit already carries a verdict and cannot be inspected again.</summary>
+    AlreadyInspected
 }

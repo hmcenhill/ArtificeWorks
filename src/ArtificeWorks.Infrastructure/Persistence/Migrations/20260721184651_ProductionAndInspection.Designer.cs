@@ -3,6 +3,7 @@ using System;
 using ArtificeWorks.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ArtificeWorks.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(ArtificeWorksDbContext))]
-    partial class ArtificeWorksDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260721184651_ProductionAndInspection")]
+    partial class ProductionAndInspection
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

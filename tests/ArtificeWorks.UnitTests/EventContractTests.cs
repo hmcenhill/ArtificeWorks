@@ -99,13 +99,83 @@ public class EventContractTests
     }
 
     [Fact]
+    public void ProductionCompleted_envelope_round_trips_cleanly()
+    {
+        var payload = new ProductionCompleted(
+            WorkOrderId: Guid.NewGuid(),
+            ProductId: "CUSTODIAN-STD",
+            SerialNumbers: [Guid.NewGuid(), Guid.NewGuid()],
+            AttemptNumber: 2,
+            CompletedUtc: new DateTime(2026, 7, 21, 10, 0, 0, DateTimeKind.Utc));
+
+        var restored = RoundTrip(payload);
+
+        Assert.Equal(payload.WorkOrderId, restored.WorkOrderId);
+        // The attempt number is the inspection stage's dedupe key — losing it on the wire
+        // would silently break idempotency rather than fail loudly.
+        Assert.Equal(2, restored.AttemptNumber);
+        Assert.Equal(payload.SerialNumbers, restored.SerialNumbers);
+    }
+
+    [Fact]
+    public void ReworkRequired_envelope_round_trips_cleanly()
+    {
+        var scrapped = Guid.NewGuid();
+        var payload = new ReworkRequired(
+            WorkOrderId: Guid.NewGuid(),
+            ProductId: "DELVER-MINE",
+            Scrapped: [new ScrappedUnit(scrapped, "cracked mainspring")],
+            OutstandingQty: 1,
+            AttemptNumber: 1,
+            RequiredUtc: new DateTime(2026, 7, 21, 11, 0, 0, DateTimeKind.Utc));
+
+        var restored = RoundTrip(payload);
+
+        Assert.Equal(1u, restored.OutstandingQty);
+        Assert.Equal(1, restored.AttemptNumber);
+        // Scrap reasons are the audit trail of the rework cycle; they have to survive the wire.
+        Assert.Equal(scrapped, restored.Scrapped.Single().SerialNumber);
+        Assert.Equal("cracked mainspring", restored.Scrapped.Single().Reason);
+    }
+
+    [Fact]
+    public void InspectionPassed_and_WorkOrderFaulted_envelopes_round_trip_cleanly()
+    {
+        var passed = new InspectionPassed(Guid.NewGuid(), "SCRIVENER-PRO", [Guid.NewGuid()], DateTime.UtcNow);
+        Assert.Equal(passed.SerialNumbers, RoundTrip(passed).SerialNumbers);
+
+        var faulted = new WorkOrderFaulted(Guid.NewGuid(), "SCRIVENER-PRO", "Rebuild cap of 3 exceeded.", 4, DateTime.UtcNow);
+        var restoredFault = RoundTrip(faulted);
+        Assert.Equal("Rebuild cap of 3 exceeded.", restoredFault.Reason);
+        Assert.Equal(4, restoredFault.AttemptNumber);
+    }
+
+    [Fact]
     public void Event_type_and_default_schema_version_are_the_published_contract()
     {
         // Guards against an accidental rename/version bump of the wire contract.
         Assert.Equal("work-order.created", new WorkOrderCreated(Guid.NewGuid(), "p", "P", 1, "r", DateTime.UtcNow).EventType);
         Assert.Equal("work-order.scheduled", new WorkOrderScheduled(Guid.NewGuid(), "p", "P", 1, DateTime.UtcNow).EventType);
         Assert.Equal("work-order.materials-reserved", new MaterialsReserved(Guid.NewGuid(), "p", 1, [], DateTime.UtcNow).EventType);
+        Assert.Equal("work-order.production-completed", new ProductionCompleted(Guid.NewGuid(), "p", [], 1, DateTime.UtcNow).EventType);
+        Assert.Equal("work-order.rework-required", new ReworkRequired(Guid.NewGuid(), "p", [], 1, 1, DateTime.UtcNow).EventType);
+        Assert.Equal("work-order.inspection-passed", new InspectionPassed(Guid.NewGuid(), "p", [], DateTime.UtcNow).EventType);
+        Assert.Equal("work-order.faulted", new WorkOrderFaulted(Guid.NewGuid(), "p", "why", 1, DateTime.UtcNow).EventType);
         Assert.Equal(1, new WorkOrderScheduled(Guid.NewGuid(), "p", "P", 1, DateTime.UtcNow).SchemaVersion);
+    }
+
+    /// <summary>Serializes an event in its envelope exactly as the publisher does, and back.</summary>
+    private static T RoundTrip<T>(T payload) where T : IntegrationEvent
+    {
+        var envelope = new EventEnvelope<T>(
+            Guid.NewGuid(), payload.EventType, payload.SchemaVersion,
+            Guid.NewGuid(), DateTime.UtcNow, payload);
+
+        var restored = JsonSerializer.Deserialize<EventEnvelope<T>>(
+            JsonSerializer.Serialize(envelope, Options), Options);
+
+        Assert.NotNull(restored);
+        return restored!.Payload;
     }
 
     [Fact]

@@ -40,14 +40,14 @@ Each subscriber binds the exact routing keys it acts on — the outcome *is* the
 
 ## Acceptance Criteria
 
-- [ ] Picked work orders progress through InProcess via events
-- [ ] Every ordered unit exists as a serialized `StockKeepingUnit` owned by the work order, with its own state
-- [ ] Inspection produces explicit per-unit pass/fail outcomes with reasons
-- [ ] Failed inspections route the work order to a defined, recoverable path (scrap → rebuild shortfall → re-inspect)
-- [ ] A work order reaches Delivery only when the full ordered quantity has passed inspection
-- [ ] Repeated rebuild failures land the order in Fault rather than looping forever
-- [ ] Redelivery of any production or inspection event has no additional effect
-- [ ] Every stage transition appears in the work order's state history
+- [x] Picked work orders progress through InProcess via events
+- [x] Every ordered unit exists as a serialized `StockKeepingUnit` owned by the work order, with its own state
+- [x] Inspection produces explicit per-unit pass/fail outcomes with reasons
+- [x] Failed inspections route the work order to a defined, recoverable path (scrap → rebuild shortfall → re-inspect)
+- [x] A work order reaches Delivery only when the full ordered quantity has passed inspection
+- [x] Repeated rebuild failures land the order in Fault rather than looping forever
+- [x] Redelivery of any production or inspection event has no additional effect
+- [x] Every stage transition appears in the work order's state history
 
 ## Stories
 
@@ -66,9 +66,13 @@ Interviewed and settled before the stories were written:
 - **Verdicts come from a configurable auto-inspector plus an API override.** Failure rate defaults to `0.0` (everything passes) so the unattended pipeline flows; a `POST` endpoint records a verdict by hand, which is the visitor's decision moment and the hook Epic 12 reuses instead of inventing a back door.
 - **Rebuild attempts are capped** (configurable, default 3). Exceeding the cap sends the order to Fault with the scrap history as the reason — the first legitimate use of Fault, and it is already releasable and cancellable.
 
-## Open questions
+## Decisions taken at implementation
 
-- **Do rebuilds consume new materials?** Physically they should — a scrapped unit burns its parts. But Epic 5 made `material_reservations.WorkOrderId` **unique** as its idempotency key, so a second pick for the same order is impossible without reopening 5.4's design and paying for a migration. The stories are written assuming **rebuilds consume nothing new**; 6.3 carries this as the decision to settle at implementation time. Deferring to Epic 13 (deep domain) is the likely answer.
+- **Rebuilds consume no new materials** (the grooming's open question, settled at 6.3 as option 1 of three). The original pick covers the whole order; scrapped parts are notionally salvaged. Zero schema change to Epic 5's design. **Known simplification**, revisited in Epic 13 alongside multi-level BOMs — the honest fix is widening `material_reservations` to `(WorkOrderId, AttemptNumber)` so reservations, builds and dedupe are all attempt-scoped.
+- **A guarded `WorkOrder.Fault(by, reason)` was added** rather than calling `SetStatus` from a worker. 6.3 flagged the discomfort as a signal, and it was: `SetStatus` is the unguarded superuser override, and routing to Fault is now a real transition that refuses terminal states and demands a reason.
+- **Auto-inspection is switchable (`Inspection:AutoInspect`, default true).** Not in the grooming, but forced by it: with `FailureRate` at 0.0 the auto-inspector verdicts every unit inside the same handler that advances the order into Inspection, so the manual endpoint would have had nothing left to judge and would have 409'd forever. With auto-inspection off, units reach Inspection and wait for a human — which is what makes the visitor's decision moment actually reachable.
+- **The dedupe key is `(WorkOrderId, AttemptNumber)`** on two new tables, `production_runs` and `inspection_runs`. `inspection_runs` is not redundant with 6.2's per-unit guard: the unit guard stops re-verdicting a unit, but only an attempt-scoped key stops a redelivered `ProductionCompleted` re-deciding the *order-level* outcome.
+- **Units survive cancellation** (6.1's open question). With an owning FK, clearing the collection would delete serialized units; a cancelled order silently erasing the record of what it manufactured is worse than keeping it.
 
 ## Notes
 

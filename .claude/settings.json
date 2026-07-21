@@ -32,7 +32,9 @@
       "Bash(powershell -Command '$p = Get-Process -Name '\\\\''ArtificeWorks.Api'\\\\'','\\\\''ArtificeWorks.Workers'\\\\'' -ErrorAction SilentlyContinue; if \\($p\\) { $p | Stop-Process -Force; Write-Output '\\\\''killed leftovers'\\\\'' } else { Write-Output '\\\\''none running'\\\\'' }')",
       "Bash(git checkout *)",
       "Read(//c/Program Files/Docker/Docker/**)",
-      "Bash(python -)"
+      "Bash(python -)",
+      "PowerShell(dotnet build \"c:\\\\Users\\\\hmcen\\\\source\\\\repos\\\\ArtificeWorks\\\\src\\\\ArtificeWorks.Infrastructure\\\\ArtificeWorks.Infrastructure.csproj\" -v q --nologo)",
+      "PowerShell(dotnet build \"c:\\\\Users\\\\hmcen\\\\source\\\\repos\\\\ArtificeWorks\\\\ArtificeWorks.sln\" -v q --nologo -clp:ErrorsOnly)"
     ]
   }
 }

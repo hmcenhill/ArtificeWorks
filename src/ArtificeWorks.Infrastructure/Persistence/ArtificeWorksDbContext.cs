@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 
 using ArtificeWorks.Domain.Models;
 using ArtificeWorks.Domain.Models.Materials;
+using ArtificeWorks.Domain.Models.Production;
 
 namespace ArtificeWorks.Infrastructure.Persistence;
 
@@ -20,6 +21,8 @@ public class ArtificeWorksDbContext : DbContext
     public DbSet<BomLine> BomLines => Set<BomLine>();
     public DbSet<MaterialReservation> MaterialReservations => Set<MaterialReservation>();
     public DbSet<MaterialReservationLine> MaterialReservationLines => Set<MaterialReservationLine>();
+    public DbSet<ProductionRun> ProductionRuns => Set<ProductionRun>();
+    public DbSet<InspectionRun> InspectionRuns => Set<InspectionRun>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -61,9 +64,18 @@ public class ArtificeWorksDbContext : DbContext
             entity.Property(x => x.OrderItemQty)
                 .IsRequired();
 
+            entity.Property(x => x.BuildAttempt)
+                .IsRequired();
+
+            // One-to-many since 6.1, not many-to-many. A serialized unit belongs to exactly
+            // one work order for its whole life — this factory builds to order rather than
+            // allocating finished units off a shared shelf — and the owning FK is what lets
+            // the rework loop count *this* order's passing units cheaply.
             entity.HasMany(x => x.AssignedStock)
-                .WithMany()
-                .UsingEntity("work_order_skus");
+                .WithOne()
+                .HasForeignKey("work_order_id")
+                .IsRequired()
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<WorkOrderStateHistory>(entity =>
@@ -84,6 +96,14 @@ public class ArtificeWorksDbContext : DbContext
 
             entity.Property(x => x.Notes)
                 .HasMaxLength(500);
+
+            // Silently unmapped since 4.2: read-only properties are only picked up here when
+            // configured explicitly, so every transition set an author the database never
+            // stored. Mapped in 6.1 while a migration was being written anyway; rows written
+            // before that keep the empty-string default, since their author is unrecoverable.
+            entity.Property(x => x.CompletedBy)
+                .HasMaxLength(200)
+                .IsRequired();
 
             entity.HasOne(x => x.WorkOrder)
                 .WithMany(x => x.StateHistory)
@@ -213,6 +233,89 @@ public class ArtificeWorksDbContext : DbContext
                 .WithMany()
                 .HasForeignKey("product_item_id")
                 .IsRequired();
+
+            entity.Property(x => x.Status)
+                .HasConversion<string>()
+                .IsRequired();
+
+            entity.Property(x => x.BuiltUtc)
+                .IsRequired();
+
+            entity.Property(x => x.InspectedUtc);
+
+            entity.Property(x => x.ScrapReason)
+                .HasMaxLength(500);
+
+            entity.Property(x => x.BuildAttempt)
+                .IsRequired();
+
+            // The rework loop's hot read: "which units of this attempt still need a verdict?"
+            entity.HasIndex("work_order_id", nameof(StockKeepingUnit.BuildAttempt));
+        });
+
+        modelBuilder.Entity<ProductionRun>(entity =>
+        {
+            entity.ToTable("production_runs");
+
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.Id)
+                .ValueGeneratedNever();
+
+            entity.Property(x => x.AttemptNumber)
+                .IsRequired();
+
+            entity.Property(x => x.UnitsBuilt)
+                .IsRequired();
+
+            entity.Property(x => x.BuiltUtc)
+                .IsRequired();
+
+            // THE idempotency key for a stage that legitimately repeats (6.4). Epic 5 could
+            // key on the work order alone because picking happens once per order; production
+            // does not, so the thing that must happen exactly once is an *attempt*. The row is
+            // written in the same SaveChanges as the units it built, so marker and work still
+            // commit atomically — 5.4's best property, kept.
+            entity.HasIndex(x => new { x.WorkOrderId, x.AttemptNumber })
+                .IsUnique();
+
+            entity.HasOne<WorkOrder>()
+                .WithMany()
+                .HasForeignKey(x => x.WorkOrderId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<InspectionRun>(entity =>
+        {
+            entity.ToTable("inspection_runs");
+
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.Id)
+                .ValueGeneratedNever();
+
+            entity.Property(x => x.AttemptNumber)
+                .IsRequired();
+
+            entity.Property(x => x.UnitsPassed)
+                .IsRequired();
+
+            entity.Property(x => x.UnitsScrapped)
+                .IsRequired();
+
+            entity.Property(x => x.InspectedUtc)
+                .IsRequired();
+
+            // Same key, same reasoning: one inspection per build attempt. Without it a
+            // redelivered ProductionCompleted could re-decide the order-level outcome even
+            // though every individual unit refuses a second verdict.
+            entity.HasIndex(x => new { x.WorkOrderId, x.AttemptNumber })
+                .IsUnique();
+
+            entity.HasOne<WorkOrder>()
+                .WithMany()
+                .HasForeignKey(x => x.WorkOrderId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

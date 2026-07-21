@@ -11,6 +11,7 @@ using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Infrastructure.Data;
 using ArtificeWorks.Infrastructure.Messaging;
 using ArtificeWorks.Infrastructure.Persistence;
+using ArtificeWorks.Infrastructure.Workflow;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -70,6 +71,10 @@ builder.Services.AddDbContext<ArtificeWorksDbContext>(options =>
 builder.Services.AddScoped<IProductRepository, ProductRepository>();
 builder.Services.AddScoped<IWorkOrderRepository, WorkOrderRepository>();
 builder.Services.AddScoped<IMaterialReservationRepository, MaterialReservationRepository>();
+
+// Production + inspection (Epic 6). The API needs the inspection workflow because the manual
+// verdict endpoint drives the same one the worker does — that is the point of the endpoint.
+builder.Services.AddProductionAndInspection(builder.Configuration);
 
 builder.Services.AddScoped<ProductHandler>();
 builder.Services.AddScoped<WorkOrderHandler>();

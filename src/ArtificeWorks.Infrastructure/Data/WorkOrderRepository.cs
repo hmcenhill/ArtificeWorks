@@ -19,6 +19,9 @@ public class WorkOrderRepository : IWorkOrderRepository
     {
         return await _context.WorkOrders
             .Include(wo => wo.OrderedItem)
+            // The serialized units and their verdicts are part of the work order's read model
+            // since 6.2 — a failed inspection has to be visible on the API, not only in the log.
+            .Include(wo => wo.AssignedStock)
             .FirstOrDefaultAsync(wo => wo.Id == id);
     }
 
