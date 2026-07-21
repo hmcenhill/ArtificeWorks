@@ -27,8 +27,8 @@ ArtificeWorks is the event-driven software that runs the factory: work order sch
 | 3 | Core work order and catalog API | M2 | ✅ Done |
 | 4 | Messaging infrastructure | M3 | ✅ Done |
 | 5 | Material picking workflow | M3 | ✅ Done |
-| 6 | Production and inspection workflow | M4 | 📋 Groomed — next up |
-| 7 | Shipping and delivery workflow | M4 | Planned |
+| 6 | Production and inspection workflow | M4 | ✅ Done |
+| 7 | Shipping and delivery workflow | M4 | 📋 Groomed — next up |
 | 8 | Reliability and recovery | M4 | Planned |
 | 9 | Observability | M5 | Planned |
 | 10 | Simulation engine | M5 | Planned |
