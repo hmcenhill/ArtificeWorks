@@ -29,7 +29,10 @@
       "Bash(powershell -Command \"Get-Process -Name 'ArtificeWorks.Api' -ErrorAction SilentlyContinue | Stop-Process -Force; Write-Output 'killed'\")",
       "Bash(powershell -Command \"Get-Process -Name 'ArtificeWorks.Api','ArtificeWorks.Workers' -ErrorAction SilentlyContinue | Stop-Process -Force; Write-Output 'clean'\")",
       "Bash(xargs cat)",
-      "Bash(powershell -Command '$p = Get-Process -Name '\\\\''ArtificeWorks.Api'\\\\'','\\\\''ArtificeWorks.Workers'\\\\'' -ErrorAction SilentlyContinue; if \\($p\\) { $p | Stop-Process -Force; Write-Output '\\\\''killed leftovers'\\\\'' } else { Write-Output '\\\\''none running'\\\\'' }')"
+      "Bash(powershell -Command '$p = Get-Process -Name '\\\\''ArtificeWorks.Api'\\\\'','\\\\''ArtificeWorks.Workers'\\\\'' -ErrorAction SilentlyContinue; if \\($p\\) { $p | Stop-Process -Force; Write-Output '\\\\''killed leftovers'\\\\'' } else { Write-Output '\\\\''none running'\\\\'' }')",
+      "Bash(git checkout *)",
+      "Read(//c/Program Files/Docker/Docker/**)",
+      "Bash(python -)"
     ]
   }
 }

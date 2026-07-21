@@ -22,11 +22,11 @@ This is where the factory starts behaving like a factory — and where the class
 
 ## Acceptance Criteria
 
-- [ ] Products carry a flat BOM; seed data includes the shared-platform catalog (chassis, power core, control stack, tool-hands, locomotion, sensors)
-- [ ] A scheduled work order triggers material reservation via an event, not an API call
-- [ ] Insufficient stock is handled cleanly and visibly (OnHold + reason in state history)
-- [ ] Concurrent work orders cannot reserve the same stock twice
-- [ ] Duplicate deliveries of the same event have no additional effect
+- [x] Products carry a flat BOM; seed data includes the shared-platform catalog (chassis, power core, control stack, tool-hands, locomotion, sensors)
+- [x] A scheduled work order triggers material reservation via an event, not an API call
+- [x] Insufficient stock is handled cleanly and visibly (OnHold + reason in state history)
+- [x] Concurrent work orders cannot reserve the same stock twice
+- [x] Duplicate deliveries of the same event have no additional effect
 
 ## Stories
 

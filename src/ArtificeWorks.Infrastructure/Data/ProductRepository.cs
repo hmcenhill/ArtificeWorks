@@ -21,6 +21,18 @@ public class ProductRepository : IProductRepository
         return product;
     }
 
+    public async Task<Product?> GetWithBom(string id)
+    {
+        // No-tracking on purpose: the picking workflow only reads the BOM, and its reservation
+        // path decrements on-hand with raw SQL — a tracked Component would immediately be a
+        // stale copy of a row the database has already moved on from.
+        return await _context.Products
+            .AsNoTracking()
+            .Include(p => p.BillOfMaterials)
+                .ThenInclude(line => line.Component)
+            .FirstOrDefaultAsync(p => p.ItemId == id);
+    }
+
     public async Task<Product> Add(Product product)
     {
         var existing = await Get(product.ItemId);

@@ -16,6 +16,10 @@ public class ArtificeWorksDbContext : DbContext
     public DbSet<WorkOrderStateHistory> OrderStateHistory => Set<WorkOrderStateHistory>();
     public DbSet<StockKeepingUnit> StockKeepingUnits => Set<StockKeepingUnit>();
     public DbSet<Product> Products => Set<Product>();
+    public DbSet<Component> Components => Set<Component>();
+    public DbSet<BomLine> BomLines => Set<BomLine>();
+    public DbSet<MaterialReservation> MaterialReservations => Set<MaterialReservation>();
+    public DbSet<MaterialReservationLine> MaterialReservationLines => Set<MaterialReservationLine>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -97,6 +101,101 @@ public class ArtificeWorksDbContext : DbContext
 
             entity.Property(x => x.ItemName)
                 .IsRequired();
+        });
+
+        modelBuilder.Entity<Component>(entity =>
+        {
+            // Belt and braces: the conditional decrement is what *prevents* overselling, but
+            // the check constraint makes "a shelf can't hold negative stock" a database
+            // invariant — any future write path that forgets the guard fails loudly instead
+            // of quietly going negative.
+            entity.ToTable("components", table =>
+                table.HasCheckConstraint("ck_components_on_hand_not_negative", "on_hand >= 0"));
+
+            entity.HasKey(x => x.ComponentId);
+
+            entity.Property(x => x.ComponentName)
+                .IsRequired();
+
+            // On-hand is the number the reservation path decrements with an atomic
+            // conditional UPDATE (see MaterialReservationRepository) — the column name is
+            // therefore part of that SQL's contract.
+            entity.Property(x => x.OnHand)
+                .HasColumnName("on_hand")
+                .IsRequired();
+        });
+
+        modelBuilder.Entity<BomLine>(entity =>
+        {
+            entity.ToTable("bom_lines");
+
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.Id)
+                .ValueGeneratedNever();
+
+            entity.Property(x => x.QtyPerUnit)
+                .IsRequired();
+
+            entity.HasOne<Product>()
+                .WithMany(x => x.BillOfMaterials)
+                .HasForeignKey(x => x.ProductId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(x => x.Component)
+                .WithMany()
+                .HasForeignKey("component_id")
+                .IsRequired();
+
+            // One line per component per product — the BOM is a set, not a bag.
+            entity.HasIndex(nameof(BomLine.ProductId), "component_id")
+                .IsUnique();
+        });
+
+        modelBuilder.Entity<MaterialReservation>(entity =>
+        {
+            entity.ToTable("material_reservations");
+
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.Id)
+                .ValueGeneratedNever();
+
+            entity.Property(x => x.ReservedUtc)
+                .IsRequired();
+
+            // THE idempotency key (5.4): one pick per work order. A redelivered
+            // WorkOrderScheduled tries to insert a second reservation for the same order and
+            // is rejected by the database, so duplicate consumption cannot double-decrement
+            // inventory even if two workers race past the pre-check simultaneously.
+            entity.HasIndex(x => x.WorkOrderId)
+                .IsUnique();
+
+            entity.HasOne<WorkOrder>()
+                .WithMany()
+                .HasForeignKey(x => x.WorkOrderId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<MaterialReservationLine>(entity =>
+        {
+            entity.ToTable("material_reservation_lines");
+
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.Id)
+                .ValueGeneratedNever();
+
+            entity.Property(x => x.ComponentId)
+                .IsRequired();
+
+            entity.Property(x => x.Quantity)
+                .IsRequired();
+
+            entity.HasOne<MaterialReservation>()
+                .WithMany(x => x.Lines)
+                .HasForeignKey(x => x.ReservationId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<StockKeepingUnit>(entity =>

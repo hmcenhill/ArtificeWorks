@@ -69,11 +69,37 @@ builder.Services.AddDbContext<ArtificeWorksDbContext>(options =>
 
 builder.Services.AddScoped<IProductRepository, ProductRepository>();
 builder.Services.AddScoped<IWorkOrderRepository, WorkOrderRepository>();
+builder.Services.AddScoped<IMaterialReservationRepository, MaterialReservationRepository>();
 
 builder.Services.AddScoped<ProductHandler>();
 builder.Services.AddScoped<WorkOrderHandler>();
 
 var app = builder.Build();
+
+// Seed the shared-platform catalog (components, product lines, BOMs) if the schema is ready.
+// Idempotent and additive — it never restocks or overwrites a factory already in motion.
+// Migrations stay a deliberate operator action (see Notes.md), so seeding is skipped rather
+// than forced when the database isn't migrated yet.
+await using (var scope = app.Services.CreateAsyncScope())
+{
+    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+    var context = scope.ServiceProvider.GetRequiredService<ArtificeWorksDbContext>();
+    try
+    {
+        if ((await context.Database.GetPendingMigrationsAsync()).Any())
+        {
+            logger.LogWarning("Database has pending migrations; skipping catalog seed. Run 'dotnet ef database update'.");
+        }
+        else
+        {
+            await CatalogSeeder.SeedAsync(context);
+        }
+    }
+    catch (Exception e)
+    {
+        logger.LogError(e, "Catalog seeding failed; the API will start with whatever catalog is already present.");
+    }
+}
 
 // Turns unhandled exceptions into a ProblemDetails 500 (code `internal_error` is
 // added by the handler below) instead of leaking a stack trace.

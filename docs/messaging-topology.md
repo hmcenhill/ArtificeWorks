@@ -13,12 +13,18 @@ flowchart LR
     api["ArtificeWorks.Api<br/>(publisher)"]
     ex{{"exchange<br/><b>artifice.events</b><br/>type: direct, durable"}}
     q[["queue<br/><b>artifice.workers</b><br/>durable"]]
-    worker["ArtificeWorks.Workers<br/>(consumer)"]
+    worker["ArtificeWorks.Workers<br/>(consumer + publisher)"]
 
     api -- "publish<br/>routing key = event type" --> ex
     ex -- "binding: work-order.scheduled" --> q
     q -- "deliver (prefetch 1, manual ack)" --> worker
+    worker -- "publish work-order.materials-reserved<br/>(same correlation id)" --> ex
 ```
+
+Since Epic 5 the worker is **both** a consumer and a publisher: picking materials for a
+scheduled order emits `work-order.materials-reserved` back onto the same exchange, which is
+how the pipeline continues to the next stage. Nothing binds that routing key yet — Epic 6's
+production consumer is its first subscriber.
 
 ## Exchange
 
@@ -67,6 +73,29 @@ worker's handler set are always the same list.
 - **Nack without requeue on failure** — if a handler throws, the message is nacked with
   `requeue: false` and dropped. There is no dead-letter queue yet, so requeuing a poison
   message would loop forever. Epic 8 (reliability) adds a DLQ and revisits this policy.
+
+### What counts as a failure
+
+Only genuine faults nack. **Business outcomes ack**, because they were handled:
+
+| Outcome of picking a scheduled order | Message |
+| --- | --- |
+| Materials reserved | ack |
+| Insufficient stock → order placed OnHold with a reason | **ack** — a factory waiting on parts is a result, not an error |
+| Duplicate delivery → already picked, nothing done | **ack** — by definition already handled |
+| Unexpected exception (broker/database fault, bug) | nack, `requeue: false` |
+
+Keeping that line sharp is what stops normal business flow from polluting Epic 8's retry and
+dead-letter design.
+
+### Idempotent consumption
+
+At-most-once *publish* still meets at-least-once *delivery*: redeliveries happen on consumer
+restarts and network hiccups. Picking is made safe against them by making the pick record
+itself the dedupe key — a **unique index on `material_reservations.work_order_id`** means a
+second delivery's insert fails and its inventory decrements roll back with it. The dedupe
+marker and the reservation are the same row, so they commit atomically by construction. The
+skip is logged (never silently swallowed) so Epic 12 can demo a redelivery live.
 
 ## Message shape
 
@@ -117,9 +146,11 @@ flowchart LR
    console scopes enabled, so **one `grep` of a correlation id returns every log line — API
    and worker — for that operation.**
 
-The id currently propagates API → event → worker. When workers begin re-publishing events
-(Epic 5+), they should carry the consumed id forward onto anything they emit, so the thread
-extends across multi-hop flows. That's future work; today the worker is a leaf consumer.
+5. **Carried forward on re-publish.** Since Epic 5 the worker publishes as well as consumes.
+   Its handler adopts the inbound `envelope.CorrelationId` into the per-message
+   `CorrelationContext` before running the workflow, so `work-order.materials-reserved`
+   goes out under the id the original HTTP request started with. The thread now spans
+   API → scheduling event → picking → materials event, and one `grep` still returns all of it.
 
 ## Related code
 

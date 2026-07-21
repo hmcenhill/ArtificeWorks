@@ -69,11 +69,42 @@ public class EventContractTests
     }
 
     [Fact]
+    public void MaterialsReserved_envelope_round_trips_cleanly()
+    {
+        var payload = new MaterialsReserved(
+            WorkOrderId: Guid.NewGuid(),
+            ProductId: "CUSTODIAN-STD",
+            Quantity: 2,
+            Lines:
+            [
+                new ReservedComponent("CMP-CHASSIS-STD", 2),
+                new ReservedComponent("CMP-BEARING-JEWEL", 12),
+            ],
+            ReservedUtc: new DateTime(2026, 7, 21, 8, 0, 0, DateTimeKind.Utc));
+
+        var envelope = new EventEnvelope<MaterialsReserved>(
+            Guid.NewGuid(), payload.EventType, payload.SchemaVersion,
+            Guid.NewGuid(), DateTime.UtcNow, payload);
+
+        var json = JsonSerializer.Serialize(envelope, Options);
+        var restored = JsonSerializer.Deserialize<EventEnvelope<MaterialsReserved>>(json, Options);
+
+        Assert.NotNull(restored);
+        Assert.Equal(payload.WorkOrderId, restored!.Payload.WorkOrderId);
+        Assert.Equal(payload.ProductId, restored.Payload.ProductId);
+        Assert.Equal(payload.Quantity, restored.Payload.Quantity);
+        Assert.Equal(payload.ReservedUtc, restored.Payload.ReservedUtc);
+        // The reserved lines are the point of the event — Epic 6 picks up from here.
+        Assert.Equal(payload.Lines, restored.Payload.Lines);
+    }
+
+    [Fact]
     public void Event_type_and_default_schema_version_are_the_published_contract()
     {
         // Guards against an accidental rename/version bump of the wire contract.
         Assert.Equal("work-order.created", new WorkOrderCreated(Guid.NewGuid(), "p", "P", 1, "r", DateTime.UtcNow).EventType);
         Assert.Equal("work-order.scheduled", new WorkOrderScheduled(Guid.NewGuid(), "p", "P", 1, DateTime.UtcNow).EventType);
+        Assert.Equal("work-order.materials-reserved", new MaterialsReserved(Guid.NewGuid(), "p", 1, [], DateTime.UtcNow).EventType);
         Assert.Equal(1, new WorkOrderScheduled(Guid.NewGuid(), "p", "P", 1, DateTime.UtcNow).SchemaVersion);
     }
 

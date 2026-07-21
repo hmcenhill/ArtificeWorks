@@ -16,7 +16,8 @@ public class ProductHandler
 
     public async Task<GetProductResponse> GetProduct(string productId)
     {
-        var product = await _productRepository.Get(productId);
+        // Read with the BOM so GET /products/{id} shows what the product is made of.
+        var product = await _productRepository.GetWithBom(productId);
         var errors = "";
         if (product is null)
         {
