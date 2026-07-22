@@ -27,6 +27,21 @@ public static class ProblemCodes
     public const string UnitAlreadyInspected = "unit_already_inspected";
     public const string ScrapReasonRequired = "scrap_reason_required";
 
+    // Shipping (7.2, 7.3).
+    public const string OrderNotInDelivery = "order_not_in_delivery";
+    public const string ShipmentAlreadyBooked = "shipment_already_booked";
+
+    /// <summary>The named carrier isn't one this factory works with — a malformed request (400).</summary>
+    public const string UnknownCarrier = "unknown_carrier";
+
+    /// <summary>
+    /// The carrier exists, it just won't take the job (409). Deliberately distinct from
+    /// <see cref="UnknownCarrier"/>: one is the caller's mistake, the other is the world's.
+    /// </summary>
+    public const string CarrierUnavailable = "carrier_unavailable";
+
+    public const string NothingToShip = "nothing_to_ship";
+
     /// <summary>Maps a domain transition-rejection code onto its wire reason code.</summary>
     public static string ForTransition(TransitionErrorCode code) => code switch
     {

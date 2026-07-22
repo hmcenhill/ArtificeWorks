@@ -6,6 +6,7 @@ using ArtificeWorks.Application.Messaging;
 using ArtificeWorks.Application.Messaging.Events;
 using ArtificeWorks.Domain.Models;
 using ArtificeWorks.Domain.Models.Materials;
+using ArtificeWorks.Domain.Models.Shipping;
 using ArtificeWorks.Infrastructure.Data;
 using ArtificeWorks.Infrastructure.Messaging;
 using ArtificeWorks.Infrastructure.Persistence;
@@ -28,8 +29,9 @@ namespace ArtificeWorks.IntegrationTests;
 /// <summary>
 /// The whole async pipeline against real infrastructure. The API-side publisher emits
 /// <see cref="WorkOrderScheduled"/>; from there the worker alone carries the order through
-/// picking, production and inspection to Delivery, each stage triggered by an event the
-/// previous one published. Requires Docker (Testcontainers RabbitMQ + Postgres).
+/// picking, production, inspection, shipping and dispatch to <strong>Completed</strong>, each
+/// stage triggered by an event the previous one published. Requires Docker (Testcontainers
+/// RabbitMQ + Postgres).
 /// <para>
 /// This test owns the <em>plumbing</em> claim — that the pipeline really is driven by messages
 /// over a broker rather than by method calls. The workflow guarantees (all-or-nothing
@@ -43,6 +45,7 @@ public class WorkerConsumerTests : IAsyncLifetime
     private const string Exchange = "artifice.events";
     private const string ObserverQueue = "test.materials-reserved.observer";
     private const string PassedObserverQueue = "test.inspection-passed.observer";
+    private const string CompletedObserverQueue = "test.completed.observer";
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:15.1").Build();
     private readonly RabbitMqContainer _rabbit = new RabbitMqBuilder("rabbitmq:3.11").Build();
@@ -83,6 +86,10 @@ public class WorkerConsumerTests : IAsyncLifetime
         // (FailureRate 0.0: the factory runs unattended).
         builder.Services.AddProductionAndInspection(builder.Configuration);
 
+        // Epic 7's workflow, likewise with the shipped defaults (RefusalRate 0.0, AutoBook true)
+        // so the unattended factory this test claims to demonstrate is the one that ships.
+        builder.Services.AddShipping(builder.Configuration);
+
         // Full messaging (connection + publisher) so this test drives the REAL publish path,
         // plus the consumption plumbing and every handler in the pipeline.
         builder.Services.AddRabbitMqMessaging(builder.Configuration);
@@ -91,6 +98,8 @@ public class WorkerConsumerTests : IAsyncLifetime
         builder.Services.AddEventHandler<MaterialsReserved, MaterialsReservedHandler>();
         builder.Services.AddEventHandler<ProductionCompleted, ProductionCompletedHandler>();
         builder.Services.AddEventHandler<ReworkRequired, ReworkRequiredHandler>();
+        builder.Services.AddEventHandler<InspectionPassed, InspectionPassedHandler>();
+        builder.Services.AddEventHandler<ShipmentScheduled, ShipmentScheduledHandler>();
 
         _host = builder.Build();
 
@@ -111,7 +120,7 @@ public class WorkerConsumerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Scheduling_an_order_carries_it_all_the_way_to_delivery_over_the_bus()
+    public async Task Scheduling_an_order_carries_it_all_the_way_to_completed_over_the_bus()
     {
         // Arrange — a product with a two-line BOM, stocked, and an order already Scheduled.
         var product = new Product("PRD-E2E", "End-to-end Automaton");
@@ -136,6 +145,7 @@ public class WorkerConsumerTests : IAsyncLifetime
         var scheduledKey = RoutingKeyOf(new WorkOrderScheduled(Guid.Empty, "", "", 0, default));
         var reservedKey = RoutingKeyOf(new MaterialsReserved(Guid.Empty, "", 0, [], default));
         var passedKey = RoutingKeyOf(new InspectionPassed(Guid.Empty, "", [], default));
+        var completedKey = RoutingKeyOf(new WorkOrderCompleted(Guid.Empty, "", "", "", [], default));
 
         // Declare + bind the worker's queue ourselves before publishing (idempotent with the
         // consumer's own declare) so the message can't be dropped by the direct exchange if
@@ -154,6 +164,9 @@ public class WorkerConsumerTests : IAsyncLifetime
 
             await channel.QueueDeclareAsync(PassedObserverQueue, durable: false, exclusive: false, autoDelete: false);
             await channel.QueueBindAsync(PassedObserverQueue, Exchange, passedKey);
+
+            await channel.QueueDeclareAsync(CompletedObserverQueue, durable: false, exclusive: false, autoDelete: false);
+            await channel.QueueBindAsync(CompletedObserverQueue, Exchange, completedKey);
         }
 
         // Act — publish the real scheduling event through the real publisher.
@@ -206,18 +219,18 @@ public class WorkerConsumerTests : IAsyncLifetime
         Assert.Equal(correlationId, announced.CorrelationId);
         Assert.Equal(2, announced.Payload.Lines.Count);
 
-        // Nobody touched the API again: production and inspection were each triggered by the
-        // previous stage's event. The order should reach Delivery on its own.
-        var delivered = await Poll(async () =>
+        // Nobody touched the API again: production, inspection, shipping and dispatch were each
+        // triggered by the previous stage's event. The order should reach Completed on its own.
+        var completed = await Poll(async () =>
         {
             using var scope = _host.Services.CreateScope();
             var context = scope.ServiceProvider.GetRequiredService<ArtificeWorksDbContext>();
             var order = await context.WorkOrders.AsNoTracking().SingleAsync(wo => wo.Id == workOrderId);
-            return order.CurrentStatus == WorkOrderStatus.Delivery ? order : null;
+            return order.CurrentStatus == WorkOrderStatus.Completed ? order : null;
         });
 
-        Assert.NotNull(delivered);
-        Assert.Equal(1, delivered!.BuildAttempt);
+        Assert.NotNull(completed);
+        Assert.Equal(1, completed!.BuildAttempt);
 
         using (var scope = _host.Services.CreateScope())
         {
@@ -240,16 +253,38 @@ public class WorkerConsumerTests : IAsyncLifetime
                 .ToListAsync();
             Assert.Single(history, entry => (entry.Notes ?? "").Contains("Production started"));
             Assert.Single(history, entry => (entry.Notes ?? "").Contains("passed inspection"));
+            Assert.Single(history, entry => (entry.Notes ?? "").Contains("Shipment booked"));
+            Assert.Single(history, entry => (entry.Notes ?? "").Contains("Shipment dispatched"));
+
+            // Exactly one parcel, dispatched, holding exactly the two units that passed.
+            var shipment = await context.Shipments.AsNoTracking()
+                .Include(s => s.Lines)
+                .SingleAsync(s => s.WorkOrderId == workOrderId);
+
+            Assert.Equal(ShipmentStatus.Dispatched, shipment.Status);
+            Assert.NotNull(shipment.DispatchedUtc);
+            Assert.Equal(2, shipment.Lines.Count);
+            Assert.False(string.IsNullOrWhiteSpace(shipment.TrackingNumber));
         }
 
-        // The far end of the pipeline, waiting for Epic 7's shipping consumer — still under
-        // the correlation id the original HTTP request started with, four stages later.
+        // The middle of the pipeline, still under the correlation id the original HTTP request
+        // started with, four stages later.
         var passed = await Poll(() => ReadEvent<InspectionPassed>(PassedObserverQueue));
 
         Assert.NotNull(passed);
         Assert.Equal(workOrderId, passed!.Payload.WorkOrderId);
         Assert.Equal(correlationId, passed.CorrelationId);
         Assert.Equal(2, passed.Payload.SerialNumbers.Count);
+
+        // And the far end: the terminal announcement, six stages and one correlation id from
+        // the single HTTP call that started it.
+        var finished = await Poll(() => ReadEvent<WorkOrderCompleted>(CompletedObserverQueue));
+
+        Assert.NotNull(finished);
+        Assert.Equal(workOrderId, finished!.Payload.WorkOrderId);
+        Assert.Equal(correlationId, finished.CorrelationId);
+        Assert.Equal(2, finished.Payload.SerialNumbers.Count);
+        Assert.False(string.IsNullOrWhiteSpace(finished.Payload.Carrier));
     }
 
     private async Task<EventEnvelope<T>?> ReadEvent<T>(string queue) where T : IntegrationEvent

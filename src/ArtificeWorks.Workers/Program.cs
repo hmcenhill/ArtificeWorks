@@ -35,6 +35,9 @@ builder.Services.AddScoped<MaterialPickingService>();
 // Production + inspection (Epic 6): the middle of the pipeline, including the rework cycle.
 builder.Services.AddProductionAndInspection(builder.Configuration);
 
+// Shipping + dispatch (Epic 7): the end of it.
+builder.Services.AddShipping(builder.Configuration);
+
 // Full messaging: the worker now publishes too (MaterialsReserved hands the pipeline to
 // production), so it needs the publisher and a correlation context, not just the connection.
 // The handler sets the correlation id per message from the inbound envelope.
@@ -50,6 +53,11 @@ builder.Services.AddEventHandler<WorkOrderScheduled, WorkOrderScheduledHandler>(
 builder.Services.AddEventHandler<MaterialsReserved, MaterialsReservedHandler>();
 builder.Services.AddEventHandler<ProductionCompleted, ProductionCompletedHandler>();
 builder.Services.AddEventHandler<ReworkRequired, ReworkRequiredHandler>();
+
+// Epic 7. inspection-passed → book a carrier; shipment-scheduled → dispatch and complete.
+// work-order.completed is the terminal announcement and binds to nobody.
+builder.Services.AddEventHandler<InspectionPassed, InspectionPassedHandler>();
+builder.Services.AddEventHandler<ShipmentScheduled, ShipmentScheduledHandler>();
 
 var host = builder.Build();
 host.Run();

@@ -34,7 +34,12 @@
       "Read(//c/Program Files/Docker/Docker/**)",
       "Bash(python -)",
       "PowerShell(dotnet build \"c:\\\\Users\\\\hmcen\\\\source\\\\repos\\\\ArtificeWorks\\\\src\\\\ArtificeWorks.Infrastructure\\\\ArtificeWorks.Infrastructure.csproj\" -v q --nologo)",
-      "PowerShell(dotnet build \"c:\\\\Users\\\\hmcen\\\\source\\\\repos\\\\ArtificeWorks\\\\ArtificeWorks.sln\" -v q --nologo -clp:ErrorsOnly)"
+      "PowerShell(dotnet build \"c:\\\\Users\\\\hmcen\\\\source\\\\repos\\\\ArtificeWorks\\\\ArtificeWorks.sln\" -v q --nologo -clp:ErrorsOnly)",
+      "PowerShell(dotnet ef migrations add Shipping --project src/ArtificeWorks.Infrastructure --startup-project src/ArtificeWorks.Api --output-dir Persistence/Migrations 2>&1)",
+      "PowerShell(git -C \"c:/Users/hmcen/source/repos/ArtificeWorks\" diff --stat -- \"docs/Plan/EPIC 7 - Shipping and delivery workflow\")",
+      "PowerShell(git -C \"c:/Users/hmcen/source/repos/ArtificeWorks\" diff -- \"docs/Plan/EPIC 7 - Shipping and delivery workflow/7.4.md\")",
+      "PowerShell(git -C \"c:/Users/hmcen/source/repos/ArtificeWorks\" checkout -- \"docs/Plan/EPIC 7 - Shipping and delivery workflow\")",
+      "PowerShell(git -C \"c:/Users/hmcen/source/repos/ArtificeWorks\" status --porcelain -- \"docs/Plan\")"
     ]
   }
 }

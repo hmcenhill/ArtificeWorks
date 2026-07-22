@@ -4,6 +4,7 @@ using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Messaging;
 using ArtificeWorks.Application.Messaging.Events;
 using ArtificeWorks.Domain.Models;
+using ArtificeWorks.Domain.Models.Materials;
 
 using Microsoft.Extensions.Logging;
 
@@ -11,18 +12,27 @@ namespace ArtificeWorks.Application.Handlers;
 
 public class WorkOrderHandler
 {
+    /// <summary>Author recorded against state-history entries this handler writes on its own initiative.</summary>
+    public const string Author = "work-order-api";
+
     private readonly IWorkOrderRepository _workOrderRepository;
     private readonly IProductRepository _productRepository;
+    private readonly IShipmentRepository _shipmentRepository;
+    private readonly IWorkOrderTimelineRepository _timelineRepository;
     private readonly IEventPublisher _eventPublisher;
     private readonly ILogger<WorkOrderHandler> _logger;
 
     public WorkOrderHandler(IWorkOrderRepository workOrderRepository,
         IProductRepository productRepository,
+        IShipmentRepository shipmentRepository,
+        IWorkOrderTimelineRepository timelineRepository,
         IEventPublisher eventPublisher,
         ILogger<WorkOrderHandler> logger)
     {
         _workOrderRepository = workOrderRepository;
         _productRepository = productRepository;
+        _shipmentRepository = shipmentRepository;
+        _timelineRepository = timelineRepository;
         _eventPublisher = eventPublisher;
         _logger = logger;
     }
@@ -30,13 +40,25 @@ public class WorkOrderHandler
     public async Task<WorkOrderDto?> GetWorkOrder(Guid id)
     {
         var workOrder = await _workOrderRepository.Get(id);
-        return workOrder is null ? null : new WorkOrderDto(workOrder);
+        return workOrder is null
+            ? null
+            : new WorkOrderDto(workOrder, await _shipmentRepository.GetForWorkOrder(id));
     }
 
     public async Task<WorkOrderHistoryDto?> GetWorkOrderHistory(Guid id)
     {
         var workOrder = await _workOrderRepository.GetWithHistory(id);
         return workOrder is null ? null : new WorkOrderHistoryDto(workOrder);
+    }
+
+    /// <summary>
+    /// The composed narrative (7.4), as opposed to <see cref="GetWorkOrderHistory"/>, which is
+    /// the raw state log. Both stay: one is the audit trail, the other is the story.
+    /// </summary>
+    public async Task<WorkOrderTimelineDto?> GetWorkOrderTimeline(Guid id, CancellationToken cancellationToken = default)
+    {
+        var data = await _timelineRepository.GetTimelineData(id, cancellationToken);
+        return data is null ? null : new WorkOrderTimelineDto(data);
     }
 
     public Task<WorkOrderCommandResponse> AdvanceWorkOrder(Guid id, WorkOrderCommandRequest request)
@@ -48,10 +70,14 @@ public class WorkOrderHandler
         => ExecuteCommand(id, wo => wo.SetHold(request.CreatedBy, request.Notes));
 
     public Task<WorkOrderCommandResponse> ReleaseWorkOrder(Guid id, WorkOrderCommandRequest request)
-        => ExecuteCommand(id, wo => wo.ReleaseHold(request.CreatedBy, request.Notes));
+        => ExecuteCommand(id,
+            wo => wo.ReleaseHold(request.CreatedBy, request.Notes),
+            onCommitted: wo => RerequestShippingIfStranded(wo, request.CreatedBy));
 
     public Task<WorkOrderCommandResponse> CancelWorkOrder(Guid id, WorkOrderCommandRequest request)
-        => ExecuteCommand(id, wo => wo.Cancel(request.CreatedBy, request.Notes));
+        => ExecuteCommand(id,
+            wo => wo.Cancel(request.CreatedBy, request.Notes),
+            onCommitted: VoidAnyBookedShipment);
 
     private async Task<WorkOrderCommandResponse> ExecuteCommand(Guid id,
         Func<WorkOrder, TransitionResult> command,
@@ -90,8 +116,96 @@ public class WorkOrderHandler
         return new WorkOrderCommandResponse
         {
             Outcome = WorkOrderCommandOutcome.Success,
-            WorkOrder = new WorkOrderDto(workOrder)
+            WorkOrder = new WorkOrderDto(workOrder, await _shipmentRepository.GetForWorkOrder(id))
         };
+    }
+
+    /// <summary>
+    /// <strong>The one place a release re-triggers anything (7.3).</strong> An order released
+    /// back into Delivery with no shipment is stranded: inspection has already passed it and
+    /// nothing in the pipeline will move it again, so the API republishes
+    /// <c>work-order.inspection-passed</c> and the existing shipping consumer books it. 7.1's
+    /// unique index covers the case where a shipment appeared in the meantime.
+    /// <para>
+    /// Deliberately narrow. Releases that land in any other status stay inert, exactly as 5.3
+    /// and 6.3 left them — this does not quietly re-arm the whole pipeline, and the general
+    /// answer belongs to Epic 10's simulation engine, which can own a retry policy.
+    /// </para>
+    /// <para>
+    /// It does mean the API publishes an event for a stage it doesn't own, which is worth stating
+    /// plainly. The alternative — a <c>shipping-requested</c> key with the same consumer behind
+    /// it — is more honest but is one more contract for one more caller, and the payload here is
+    /// genuinely "these units passed inspection", which is what the key already means.
+    /// </para>
+    /// </summary>
+    private async Task RerequestShippingIfStranded(WorkOrder workOrder, string releasedBy)
+    {
+        if (workOrder.CurrentStatus != WorkOrderStatus.Delivery)
+        {
+            return;
+        }
+
+        if (await _shipmentRepository.GetForWorkOrder(workOrder.Id) is not null)
+        {
+            return;
+        }
+
+        var serials = workOrder.AssignedStock
+            .Where(unit => unit.Status == UnitStatus.Passed)
+            .Select(unit => unit.SerialNumber)
+            .ToList();
+
+        if (serials.Count == 0)
+        {
+            _logger.LogWarning(
+                "Work order {WorkOrderId} was released into Delivery with no passed units; not re-requesting shipping.",
+                workOrder.Id);
+            return;
+        }
+
+        // Recorded in state history as well as logged, so the recovery reads as something the
+        // system did rather than as magic.
+        workOrder.AppendNote(Author, $"Released into Delivery with no shipment; re-requesting a carrier for {serials.Count} unit(s).");
+        await _workOrderRepository.Update(workOrder);
+
+        await PublishSafely(new InspectionPassed(
+            workOrder.Id,
+            workOrder.OrderedItem.ItemId,
+            serials,
+            DateTime.UtcNow));
+
+        _logger.LogInformation(
+            "Work order {WorkOrderId} released by {ReleasedBy} into Delivery with no shipment; republished inspection-passed for {UnitCount} unit(s).",
+            workOrder.Id, releasedBy, serials.Count);
+    }
+
+    /// <summary>
+    /// A cancelled order must not leave a live parcel behind it (decided at 7.2). Only a booked,
+    /// undispatched shipment can be voided — after dispatch the question cannot arise, because a
+    /// Completed order refuses <c>Cancel</c> already.
+    /// </summary>
+    private async Task VoidAnyBookedShipment(WorkOrder workOrder)
+    {
+        var shipment = await _shipmentRepository.GetForWorkOrder(workOrder.Id);
+        if (shipment is null)
+        {
+            return;
+        }
+
+        var voided = shipment.Void();
+        if (!voided.Success)
+        {
+            _logger.LogWarning(
+                "Work order {WorkOrderId} was cancelled but its shipment could not be voided: {Error}",
+                workOrder.Id, voided.Error);
+            return;
+        }
+
+        await _shipmentRepository.Update();
+
+        _logger.LogInformation(
+            "Work order {WorkOrderId} was cancelled; shipment {TrackingNumber} with {Carrier} voided.",
+            workOrder.Id, shipment.TrackingNumber, shipment.Carrier);
     }
 
     /// <summary>

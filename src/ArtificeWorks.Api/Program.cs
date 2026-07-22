@@ -71,10 +71,16 @@ builder.Services.AddDbContext<ArtificeWorksDbContext>(options =>
 builder.Services.AddScoped<IProductRepository, ProductRepository>();
 builder.Services.AddScoped<IWorkOrderRepository, WorkOrderRepository>();
 builder.Services.AddScoped<IMaterialReservationRepository, MaterialReservationRepository>();
+builder.Services.AddScoped<IWorkOrderTimelineRepository, WorkOrderTimelineRepository>();
 
 // Production + inspection (Epic 6). The API needs the inspection workflow because the manual
 // verdict endpoint drives the same one the worker does — that is the point of the endpoint.
 builder.Services.AddProductionAndInspection(builder.Configuration);
+
+// Shipping (Epic 7). The API needs it for the same reason: the manual booking endpoint drives
+// the same workflow the worker does, and releasing an order held at Delivery re-requests a
+// booking (7.3), which means the API reads shipments too.
+builder.Services.AddShipping(builder.Configuration);
 
 builder.Services.AddScoped<ProductHandler>();
 builder.Services.AddScoped<WorkOrderHandler>();

@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using ArtificeWorks.Domain.Models;
 using ArtificeWorks.Domain.Models.Materials;
 using ArtificeWorks.Domain.Models.Production;
+using ArtificeWorks.Domain.Models.Shipping;
 
 namespace ArtificeWorks.Infrastructure.Persistence;
 
@@ -23,6 +24,8 @@ public class ArtificeWorksDbContext : DbContext
     public DbSet<MaterialReservationLine> MaterialReservationLines => Set<MaterialReservationLine>();
     public DbSet<ProductionRun> ProductionRuns => Set<ProductionRun>();
     public DbSet<InspectionRun> InspectionRuns => Set<InspectionRun>();
+    public DbSet<Shipment> Shipments => Set<Shipment>();
+    public DbSet<ShipmentLine> ShipmentLines => Set<ShipmentLine>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -315,6 +318,69 @@ public class ArtificeWorksDbContext : DbContext
             entity.HasOne<WorkOrder>()
                 .WithMany()
                 .HasForeignKey(x => x.WorkOrderId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<Shipment>(entity =>
+        {
+            entity.ToTable("shipments");
+
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.Id)
+                .ValueGeneratedNever();
+
+            entity.Property(x => x.Carrier)
+                .HasMaxLength(200)
+                .IsRequired();
+
+            entity.Property(x => x.TrackingNumber)
+                .HasMaxLength(100)
+                .IsRequired();
+
+            entity.Property(x => x.Status)
+                .HasConversion<string>()
+                .IsRequired();
+
+            entity.Property(x => x.BookedUtc)
+                .IsRequired();
+
+            entity.Property(x => x.EstimatedArrivalUtc)
+                .IsRequired();
+
+            entity.Property(x => x.DispatchedUtc);
+
+            // THE idempotency key for Epic 7 — and note it is order-scoped again, not
+            // attempt-scoped like Epic 6's run tables. That is not a regression: 6.4's argument
+            // was that the key must follow *the thing that must happen once*, and shipping
+            // happens exactly once per order, so the answer is the order. A redelivered
+            // InspectionPassed tries to insert a second shipment and the database refuses.
+            entity.HasIndex(x => x.WorkOrderId)
+                .IsUnique();
+
+            entity.HasOne<WorkOrder>()
+                .WithMany()
+                .HasForeignKey(x => x.WorkOrderId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ShipmentLine>(entity =>
+        {
+            entity.ToTable("shipment_lines");
+
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.Id)
+                .ValueGeneratedNever();
+
+            // The serial number, not a navigation to the unit: the parcel is an immutable
+            // record of what went out, exactly as a reservation line is of what was drawn.
+            entity.Property(x => x.SerialNumber)
+                .IsRequired();
+
+            entity.HasOne<Shipment>()
+                .WithMany(x => x.Lines)
+                .HasForeignKey(x => x.ShipmentId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
     }

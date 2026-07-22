@@ -16,7 +16,7 @@ flowchart LR
     worker["ArtificeWorks.Workers<br/>(consumer + publisher)"]
 
     api -- "publish<br/>routing key = event type" --> ex
-    ex -- "bindings: scheduled,<br/>materials-reserved,<br/>production-completed,<br/>rework-required" --> q
+    ex -- "bindings: scheduled,<br/>materials-reserved,<br/>production-completed,<br/>rework-required,<br/>inspection-passed,<br/>shipment-scheduled" --> q
     q -- "deliver (prefetch 1, manual ack)" --> worker
     worker -- "publish next stage's event<br/>(same correlation id)" --> ex
 ```
@@ -26,6 +26,9 @@ driving the pipeline: one HTTP call schedules an order, and every stage after th
 triggered by the event the previous stage published. The worker publishes to the same exchange
 it consumes from, so `work-order.rework-required` goes *out* to the broker and comes back — the
 rework loop is a genuine cycle over the transport, not a method call in a handler.
+
+Since Epic 7 the pipeline runs to its end: **one `POST /work-orders/{id}/advance` carries an
+order all the way to Completed**, with a parcel and a tracking number at the far side.
 
 ## The pipeline
 
@@ -40,17 +43,39 @@ flowchart LR
     insp -->|"shortfall,<br/>rebuilds left"| rr
     insp -->|"full qty passed"| ip(["work-order.<br/>inspection-passed"])
     insp -->|"cap exceeded"| f(["work-order.faulted"])
-    ip -.->|Epic 7| ship["shipping"]
+    ip --> ship["shipping"]
+    ship -->|"carrier accepts"| ss(["work-order.<br/>shipment-scheduled"])
+    ship -->|"carrier refuses"| hold["order OnHold<br/>(in Delivery)"]
+    hold -.->|"POST /release<br/>republishes"| ip
+    ss --> disp["dispatch"]
+    disp --> done(["work-order.<br/>completed"])
 ```
 
 Each subscriber binds the exact routing keys it acts on, so **the outcome is the routing key**:
 no consumer receives an event and then decides the event wasn't for it. That is the direct
 exchange earning its place.
 
-Two of these keys currently have no subscriber. `work-order.inspection-passed` waits for Epic
-7's shipping consumer; `work-order.faulted` is announced for the dashboard (Epic 11) because a
-faulted order is a recoverable state a human is expected to act on, and nothing in the pipeline
-will move it again on its own.
+Two keys have no subscriber, both deliberately. `work-order.faulted` and
+`work-order.completed` are *announcements* for the dashboard (Epic 11): one is a recoverable
+state a human is expected to act on, the other is the terminal "and that's the end of it".
+Nothing in the pipeline acts on either.
+
+### `work-order.inspection-passed` has two publishers
+
+Worth noticing, because it is the only key that does. The inspection worker publishes it when a
+full quantity passes — and since 7.3 **the API publishes it too**, when a visitor releases an
+order held at Delivery that has no shipment. That release would otherwise be a state change
+leading nowhere: inspection has already passed the order and nothing will move it again.
+
+The consumer neither knows nor cares which publisher a delivery came from, which is the point.
+The alternative — a `shipping-requested` key with the same consumer behind it — is arguably more
+honest but is one more contract for one more caller, and the payload really is "these units
+passed inspection".
+
+The re-trigger is **narrow on purpose**: only a release that lands in Delivery *with no shipment*
+republishes. Releases into any other status stay inert, as 5.3 and 6.3 left them. The general
+answer (releases anywhere re-arm the pipeline) belongs to Epic 10's simulation engine, which can
+own a retry policy.
 
 ## Exchange
 
@@ -79,7 +104,7 @@ so whichever service starts first declares it; the declaration is idempotent.
 
 | Queue | Durable | Bound routing keys | Consumer |
 | --- | --- | --- | --- |
-| `artifice.workers` | yes | one per handled event type — `work-order.scheduled`, `work-order.materials-reserved`, `work-order.production-completed`, `work-order.rework-required` | `ArtificeWorks.Workers` |
+| `artifice.workers` | yes | one per handled event type — `work-order.scheduled`, `work-order.materials-reserved`, `work-order.production-completed`, `work-order.rework-required`, `work-order.inspection-passed`, `work-order.shipment-scheduled` | `ArtificeWorks.Workers` |
 
 ### The full event set
 
@@ -90,7 +115,9 @@ so whichever service starts first declares it; the declaration is idempotent.
 | `work-order.materials-reserved` | worker (picking) | production | Build attempt 1 |
 | `work-order.production-completed` | worker (production) | inspection | Judge the units this attempt built |
 | `work-order.rework-required` | worker (inspection) | production | Rebuild the shortfall as attempt N+1 |
-| `work-order.inspection-passed` | worker (inspection) | *(Epic 7: shipping)* | Full ordered quantity passed |
+| `work-order.inspection-passed` | worker (inspection) **and API (on release, 7.3)** | shipping | Full ordered quantity passed; book a carrier |
+| `work-order.shipment-scheduled` | worker (shipping) | dispatch | A carrier accepted; hand the parcel over |
+| `work-order.completed` | worker (dispatch) | *(Epic 11: dashboard)* | Parcel dispatched, order closed — the last event in the chain |
 | `work-order.faulted` | worker (inspection) | *(Epic 11: dashboard)* | Rebuild cap exceeded; the cycle has stopped |
 
 The worker owns a single durable queue. On startup it declares the queue and then binds it
@@ -128,6 +155,13 @@ Only genuine faults nack. **Business outcomes ack**, because they were handled:
 | inspection | **Units scrapped**, rework required | **ack** — the whole point of the epic; a failed unit is business, not error |
 | inspection | **Rebuild cap exceeded → order faulted** | **ack** — a bounded, deliberate stop |
 | inspection | Duplicate delivery → attempt already inspected | **ack** |
+| shipping | Carrier accepted; parcel booked | ack |
+| shipping | **Carrier refused → order placed OnHold with the reason** | **ack** — no capacity is an external constraint, the same reading picking takes for a shortage |
+| shipping | `AutoBook` off → order waits in Delivery for a visitor's carrier choice | **ack** — a deliberate pause, not a failure |
+| shipping | Order not in Delivery (already held, cancelled) | **ack** — a state conflict is a result |
+| shipping | Duplicate delivery → order already booked | **ack** |
+| dispatch | Parcel handed over, order Completed | ack |
+| dispatch | Duplicate delivery → shipment already dispatched | **ack** |
 | any | Unexpected exception (broker/database fault, bug) | nack, `requeue: false` |
 
 Keeping that line sharp is what stops normal business flow from polluting Epic 8's retry and
@@ -158,6 +192,20 @@ What must happen exactly once is an **attempt**. So the key is attempt-scoped:
 | `material_reservations` | `work_order_id` | one pick per order |
 | `production_runs` | `(work_order_id, attempt_number)` | one build per attempt |
 | `inspection_runs` | `(work_order_id, attempt_number)` | one inspection per attempt |
+| `shipments` | `work_order_id` | one parcel per order |
+
+**Epic 7 goes back to an order-scoped key, and that is not a regression.** The rule 6.4 actually
+established is that the key must follow *the thing that must happen once*. For production that
+was an attempt; for shipping it is the order again, because an order ships once. So `shipments`
+carries a unique index on `work_order_id` and Epic 5's trick applies unchanged — the shipment
+row *is* the dedupe marker, and it commits alongside the state-history note that describes it.
+
+**Dispatch needs no key at all.** The `Shipment`'s own `Booked → Dispatched` transition already
+refuses a second hand-over, so a redelivered `shipment-scheduled` is turned away by a state
+machine rather than by a constraint. Belt and braces, the order's `AdvanceToNextStep` would
+reject a second advance anyway, because `Completed` is terminal. This is the first stage in the
+system whose "happens once" guarantee doesn't need the database to enforce it — worth noticing,
+because it is the shape of the argument, not a table, that generalises.
 
 The attempt number is **derived deterministically from the event**, never read from the order's
 current state at handling time: `materials-reserved` always means attempt 1, and
@@ -231,9 +279,10 @@ flowchart LR
 5. **Carried forward on re-publish.** Since Epic 5 the worker publishes as well as consumes.
    Every handler adopts the inbound `envelope.CorrelationId` into the per-message
    `CorrelationContext` before running its workflow, so the event it emits goes out under the
-   id the original HTTP request started with. Since Epic 6 that thread spans API → scheduled →
-   picking → production → inspection → `inspection-passed`, round every revolution of the
-   rework loop, and one `grep` still returns all of it.
+   id the original HTTP request started with. Since Epic 7 that thread spans the whole pipeline
+   — API → scheduled → picking → production → inspection → shipping → dispatch →
+   `work-order.completed` — round every revolution of the rework loop, and one `grep` still
+   returns all of it.
 
 ## Related code
 

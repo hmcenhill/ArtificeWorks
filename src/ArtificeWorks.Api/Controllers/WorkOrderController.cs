@@ -5,6 +5,7 @@ using ArtificeWorks.Application.Commands;
 using ArtificeWorks.Application.Data;
 using ArtificeWorks.Application.Handlers;
 using ArtificeWorks.Application.Inspection;
+using ArtificeWorks.Application.Shipping;
 
 namespace ArtificeWorks.Api.Controllers;
 
@@ -12,10 +13,14 @@ namespace ArtificeWorks.Api.Controllers;
 [Route("work-orders")]
 [Produces("application/json")]
 [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
-public class WorkOrderController(WorkOrderHandler workOrderHandler, InspectionService inspection) : ApiControllerBase
+public class WorkOrderController(
+    WorkOrderHandler workOrderHandler,
+    InspectionService inspection,
+    ShippingService shipping) : ApiControllerBase
 {
     private readonly WorkOrderHandler _workOrderHandler = workOrderHandler;
     private readonly InspectionService _inspection = inspection;
+    private readonly ShippingService _shipping = shipping;
 
     [HttpGet("{id:guid}")]
     [ProducesResponseType<WorkOrderDto>(StatusCodes.Status200OK)]
@@ -37,6 +42,28 @@ public class WorkOrderController(WorkOrderHandler workOrderHandler, InspectionSe
         return history is null
             ? Problem(StatusCodes.Status404NotFound, ProblemCodes.WorkOrderNotFound, $"No work order found with id: {id}")
             : Ok(history);
+    }
+
+    /// <summary>
+    /// The work order's whole story in one chronological list: state changes, the material pick,
+    /// each build attempt, each inspection and its per-unit verdicts, the booking and the
+    /// dispatch. Entries are typed by <c>kind</c> so a client switches on it rather than
+    /// reconciling five read models.
+    /// <para>
+    /// This is <em>what happened</em>, derived from the records the system keeps — it is not the
+    /// message log, and nothing in it proves a message flowed. <c>/history</c> stays as the raw
+    /// state log; this is the composed narrative.
+    /// </para>
+    /// </summary>
+    [HttpGet("{id:guid}/timeline")]
+    [ProducesResponseType<WorkOrderTimelineDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<WorkOrderTimelineDto>> GetTimeline(Guid id, CancellationToken cancellationToken)
+    {
+        var timeline = await _workOrderHandler.GetWorkOrderTimeline(id, cancellationToken);
+        return timeline is null
+            ? Problem(StatusCodes.Status404NotFound, ProblemCodes.WorkOrderNotFound, $"No work order found with id: {id}")
+            : Ok(timeline);
     }
 
     [HttpPost]
@@ -125,6 +152,51 @@ public class WorkOrderController(WorkOrderHandler workOrderHandler, InspectionSe
                 => Problem(StatusCodes.Status409Conflict, ProblemCodes.UnitAlreadyInspected, result.Summary),
             // A missing scrap reason is a malformed request, not a state conflict.
             _ => Problem(StatusCodes.Status400BadRequest, ProblemCodes.ScrapReasonRequired, result.Summary)
+        };
+    }
+
+    /// <summary>
+    /// Books a carrier for an order whose units have passed — the visitor's decision moment,
+    /// reachable when <c>Shipping:AutoBook</c> is off and the order is resting in Delivery.
+    /// <para>
+    /// It calls the <em>same</em> booking workflow the shipping consumer calls, so an order
+    /// shipped by a visitor and one shipped unattended reach identical state — the shape 6.2's
+    /// verdict endpoint already proved. Once booked, dispatch and completion follow over the bus
+    /// with no further input: the decision offered here is <em>which carrier</em>, not
+    /// <em>whether to finish</em>.
+    /// </para>
+    /// <para>
+    /// Problem codes: <c>order_not_in_delivery</c> (409), <c>shipment_already_booked</c> (409),
+    /// <c>unknown_carrier</c> (400 — the caller's mistake) and <c>carrier_unavailable</c>
+    /// (409 — the carrier exists, it just won't take the job).
+    /// </para>
+    /// </summary>
+    [HttpPost("{id:guid}/shipments")]
+    [ProducesResponseType<WorkOrderDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<WorkOrderDto>> BookShipment(
+        Guid id,
+        [FromBody] BookShipmentRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _shipping.BookShipment(id, request.Carrier, request.CreatedBy, cancellationToken);
+
+        return result.Outcome switch
+        {
+            BookingOutcome.Booked => Ok(await _workOrderHandler.GetWorkOrder(id)),
+            BookingOutcome.WorkOrderNotFound
+                => Problem(StatusCodes.Status404NotFound, ProblemCodes.WorkOrderNotFound, result.Summary),
+            BookingOutcome.NotInDelivery
+                => Problem(StatusCodes.Status409Conflict, ProblemCodes.OrderNotInDelivery, result.Summary),
+            BookingOutcome.AlreadyBooked
+                => Problem(StatusCodes.Status409Conflict, ProblemCodes.ShipmentAlreadyBooked, result.Summary),
+            BookingOutcome.CarrierUnavailable
+                => Problem(StatusCodes.Status409Conflict, ProblemCodes.CarrierUnavailable, result.Summary),
+            BookingOutcome.NothingToShip
+                => Problem(StatusCodes.Status409Conflict, ProblemCodes.NothingToShip, result.Summary),
+            // A carrier this factory doesn't work with is a malformed request, not a conflict.
+            _ => Problem(StatusCodes.Status400BadRequest, ProblemCodes.UnknownCarrier, result.Summary)
         };
     }
 

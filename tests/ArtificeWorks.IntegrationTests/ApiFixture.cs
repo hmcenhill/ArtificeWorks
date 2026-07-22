@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 using ArtificeWorks.Application.Messaging;
+using ArtificeWorks.Application.Shipping;
 using ArtificeWorks.Infrastructure.Persistence;
 
 using Testcontainers.PostgreSql;
@@ -20,6 +21,13 @@ public class ApiFixture : IAsyncLifetime
     /// notably running production, which is only ever triggered by an event.
     /// </summary>
     public IServiceProvider Services => _factory.Services;
+
+    /// <summary>
+    /// The carrier seam, swapped for one a test can drive. It delegates to the real booking
+    /// source unless a test scripts a refusal, so the happy-path tests still exercise the
+    /// shipped default (<c>RefusalRate</c> 0.0) rather than a stub of it.
+    /// </summary>
+    public ScriptableCarrierBooking Carriers { get; } = new();
 
     public ApiFixture()
     {
@@ -53,6 +61,13 @@ public class ApiFixture : IAsyncLifetime
                         services.Remove(publisherRegistration);
                     }
                     services.AddScoped<IEventPublisher, NoOpEventPublisher>();
+
+                    var carrierRegistration = services.SingleOrDefault(d => d.ServiceType == typeof(ICarrierBooking));
+                    if (carrierRegistration is not null)
+                    {
+                        services.Remove(carrierRegistration);
+                    }
+                    services.AddSingleton<ICarrierBooking>(Carriers);
                 });
             });
 

@@ -151,6 +151,36 @@ public class EventContractTests
     }
 
     [Fact]
+    public void ShipmentScheduled_and_WorkOrderCompleted_envelopes_round_trip_cleanly()
+    {
+        var serials = new[] { Guid.NewGuid(), Guid.NewGuid() };
+
+        var scheduled = new ShipmentScheduled(
+            WorkOrderId: Guid.NewGuid(),
+            ProductId: "CUSTODIAN-STD",
+            Carrier: "Ravenscroft Haulage",
+            TrackingNumber: "RH-A1B2C3D4E5",
+            SerialNumbers: serials,
+            EstimatedArrivalUtc: new DateTime(2026, 7, 25, 9, 0, 0, DateTimeKind.Utc),
+            BookedUtc: new DateTime(2026, 7, 22, 9, 0, 0, DateTimeKind.Utc));
+
+        var restoredSchedule = RoundTrip(scheduled);
+        Assert.Equal("Ravenscroft Haulage", restoredSchedule.Carrier);
+        Assert.Equal("RH-A1B2C3D4E5", restoredSchedule.TrackingNumber);
+        // The parcel's contents are the point of the event; the dashboard renders them.
+        Assert.Equal(serials, restoredSchedule.SerialNumbers);
+        Assert.Equal(scheduled.EstimatedArrivalUtc, restoredSchedule.EstimatedArrivalUtc);
+
+        var completed = new WorkOrderCompleted(
+            Guid.NewGuid(), "CUSTODIAN-STD", "Meridian Aether Post", "MAP-99887766",
+            serials, new DateTime(2026, 7, 22, 10, 0, 0, DateTimeKind.Utc));
+
+        var restoredCompletion = RoundTrip(completed);
+        Assert.Equal("MAP-99887766", restoredCompletion.TrackingNumber);
+        Assert.Equal(serials, restoredCompletion.SerialNumbers);
+    }
+
+    [Fact]
     public void Event_type_and_default_schema_version_are_the_published_contract()
     {
         // Guards against an accidental rename/version bump of the wire contract.
@@ -161,6 +191,10 @@ public class EventContractTests
         Assert.Equal("work-order.rework-required", new ReworkRequired(Guid.NewGuid(), "p", [], 1, 1, DateTime.UtcNow).EventType);
         Assert.Equal("work-order.inspection-passed", new InspectionPassed(Guid.NewGuid(), "p", [], DateTime.UtcNow).EventType);
         Assert.Equal("work-order.faulted", new WorkOrderFaulted(Guid.NewGuid(), "p", "why", 1, DateTime.UtcNow).EventType);
+        Assert.Equal("work-order.shipment-scheduled",
+            new ShipmentScheduled(Guid.NewGuid(), "p", "c", "t", [], DateTime.UtcNow, DateTime.UtcNow).EventType);
+        Assert.Equal("work-order.completed",
+            new WorkOrderCompleted(Guid.NewGuid(), "p", "c", "t", [], DateTime.UtcNow).EventType);
         Assert.Equal(1, new WorkOrderScheduled(Guid.NewGuid(), "p", "P", 1, DateTime.UtcNow).SchemaVersion);
     }
 

@@ -1,5 +1,6 @@
 using ArtificeWorks.Domain.Models;
 using ArtificeWorks.Domain.Models.Materials;
+using ArtificeWorks.Domain.Models.Shipping;
 
 namespace ArtificeWorks.Application.Data;
 
@@ -22,9 +23,17 @@ public class WorkOrderDto
     /// </summary>
     public List<StockUnitDto> Units { get; set; } = [];
 
+    /// <summary>
+    /// The parcel, once a carrier has been booked. Null until then — including for an order
+    /// resting in Delivery with auto-booking off, or one held after a carrier refused, since a
+    /// refusal deliberately leaves no row (7.3).
+    /// </summary>
+    public ShipmentDto? Shipment { get; set; }
+
     public WorkOrderDto() { }
-    public WorkOrderDto(WorkOrder workOrder)
+    public WorkOrderDto(WorkOrder workOrder, Shipment? shipment = null)
     {
+        Shipment = shipment is null ? null : new ShipmentDto(shipment);
         Id = workOrder.Id;
         Status = workOrder.CurrentStatus;
         OrderedItemId = workOrder.OrderedItem.ItemId;
@@ -36,6 +45,32 @@ public class WorkOrderDto
             .ThenBy(unit => unit.BuiltUtc)
             .Select(unit => new StockUnitDto(unit))
             .ToList();
+    }
+}
+
+/// <summary>The parcel: who is carrying it, under what number, and which units are in it.</summary>
+public class ShipmentDto
+{
+    public string Carrier { get; set; } = string.Empty;
+    public string TrackingNumber { get; set; } = string.Empty;
+    public ShipmentStatus Status { get; set; }
+    public DateTime BookedUtc { get; set; }
+    public DateTime EstimatedArrivalUtc { get; set; }
+    public DateTime? DispatchedUtc { get; set; }
+
+    /// <summary>Exactly the units that shipped — the passing ones, never the scrapped.</summary>
+    public List<Guid> SerialNumbers { get; set; } = [];
+
+    public ShipmentDto() { }
+    public ShipmentDto(Shipment shipment)
+    {
+        Carrier = shipment.Carrier;
+        TrackingNumber = shipment.TrackingNumber;
+        Status = shipment.Status;
+        BookedUtc = shipment.BookedUtc;
+        EstimatedArrivalUtc = shipment.EstimatedArrivalUtc;
+        DispatchedUtc = shipment.DispatchedUtc;
+        SerialNumbers = shipment.Lines.Select(line => line.SerialNumber).ToList();
     }
 }
 

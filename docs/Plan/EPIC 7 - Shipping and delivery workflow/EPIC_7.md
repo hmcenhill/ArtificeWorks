@@ -35,10 +35,10 @@ The work order is **already in Delivery** when shipping consumes — `Inspection
 
 ## Acceptance Criteria
 
-- [ ] Shipping is requested automatically after successful inspection
-- [ ] Successful shipping completes the work order
-- [ ] Shipping failure path is defined and recoverable
-- [ ] API exposes a clear work order timeline
+- [x] Shipping is requested automatically after successful inspection
+- [x] Successful shipping completes the work order
+- [x] Shipping failure path is defined and recoverable
+- [x] API exposes a clear work order timeline
 
 ## Stories
 
