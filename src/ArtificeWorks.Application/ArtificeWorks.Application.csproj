@@ -6,6 +6,10 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
+    <!-- IMeterFactory. The instruments are declared here (Observability/ArtificeWorksMetrics) because
+         the workflow services that record them live in this project and it cannot reference
+         Infrastructure; the OpenTelemetry *registration* stays in Infrastructure. -->
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.Abstractions" Version="10.0.0" />
   </ItemGroup>
 
   <PropertyGroup>

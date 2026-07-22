@@ -3,8 +3,10 @@ using System.Text;
 using System.Text.Json;
 
 using ArtificeWorks.Application.Messaging;
+using ArtificeWorks.Application.Observability;
 using ArtificeWorks.Application.Messaging.Events;
 using ArtificeWorks.Infrastructure.Messaging;
+using ArtificeWorks.Infrastructure.Observability;
 using ArtificeWorks.Workers.Consuming;
 
 using Microsoft.Extensions.Configuration;
@@ -68,6 +70,11 @@ public class RetryLadderTests : IAsyncLifetime
             ["Retry:DelaysMs:2"] = "900",
         });
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
+
+        // Telemetry, registered exactly as the worker host registers it (9.1). No OTLP endpoint is
+        // configured, so nothing leaves the process — but the ActivitySource, the meter and the
+        // metrics recorder every service now depends on are all real.
+        builder.AddArtificeWorksTelemetry(ArtificeWorksTelemetry.WorkerServiceName);
 
         builder.Services.AddRabbitMqConnection(builder.Configuration);
         builder.Services.AddScoped<CorrelationContext>();

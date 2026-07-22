@@ -1,6 +1,7 @@
 using ArtificeWorks.Application.Data;
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Messaging;
+using ArtificeWorks.Application.Observability;
 
 using Microsoft.Extensions.Logging;
 
@@ -20,15 +21,18 @@ public sealed class DeadLetterService
 {
     private readonly IDeadLetterRepository _repository;
     private readonly IRawEventPublisher _publisher;
+    private readonly ArtificeWorksMetrics _metrics;
     private readonly ILogger<DeadLetterService> _logger;
 
     public DeadLetterService(
         IDeadLetterRepository repository,
         IRawEventPublisher publisher,
+        ArtificeWorksMetrics metrics,
         ILogger<DeadLetterService> logger)
     {
         _repository = repository;
         _publisher = publisher;
+        _metrics = metrics;
         _logger = logger;
     }
 
@@ -80,6 +84,8 @@ public sealed class DeadLetterService
             // Swept away between the read and the write.
             return new ReplayResult(ReplayOutcome.NotFound, $"No dead letter found with id {id}.");
         }
+
+        _metrics.MessageReplayed(record.EventType);
 
         _logger.LogInformation(
             "Replayed dead letter {DeadLetterId} ({EventType}) [correlation {CorrelationId}]; replay #{ReplayCount}.",

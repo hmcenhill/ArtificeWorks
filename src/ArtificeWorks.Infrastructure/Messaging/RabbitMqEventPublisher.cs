@@ -46,6 +46,6 @@ public sealed class RabbitMqEventPublisher : IEventPublisher
             envelope.EventId,
             envelope.CorrelationId,
             headers: null,
-            cancellationToken);
+            cancellationToken: cancellationToken);
     }
 }

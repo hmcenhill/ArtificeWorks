@@ -1,0 +1,144 @@
+{
+  "uid": "artificeworks-floor",
+  "title": "ArtificeWorks — Factory Floor",
+  "tags": ["artificeworks"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Is the factory healthy?",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Work orders per status",
+      "description": "The floor at a glance. A stall shows up as a status that stops emptying — which is the first thing to check when an order 'disappears'.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 20, "stacking": { "mode": "normal" } } } },
+      "targets": [
+        {
+          "expr": "artificeworks_work_orders_by_status",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Stage transitions / min",
+      "description": "Throughput per stage. Every transition is counted exactly once, by whichever service committed it.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "targets": [
+        {
+          "expr": "sum by (from, to) (rate(artificeworks_work_orders_transitions_total[5m])) * 60",
+          "legendFormat": "{{from}} → {{to}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Is Epic 8's machinery coping?",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
+    },
+    {
+      "type": "stat",
+      "title": "Outbox lag (s)",
+      "description": "Age of the oldest unsent outbox row. THE number to watch: a backlog is safe — nothing is lost while it drains — but a growing one means the broker is unreachable.",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 30 },
+              { "color": "red", "value": 120 }
+            ]
+          }
+        }
+      },
+      "targets": [{ "expr": "max(artificeworks_outbox_lag_seconds)", "refId": "A" }]
+    },
+    {
+      "type": "stat",
+      "title": "Unsent outbox rows",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 10 },
+      "targets": [{ "expr": "sum(artificeworks_outbox_unsent)", "refId": "A" }]
+    },
+    {
+      "type": "stat",
+      "title": "Dead letters awaiting a human",
+      "description": "Never decreases on its own: 8.2's ladder gives up loudly, and only a replay clears a row.",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "targets": [{ "expr": "max(artificeworks_dead_letters_unreplayed)", "refId": "A" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Retries and parks / min",
+      "description": "The retry ladder at work. Retries climbing while parks stay at zero is the system recovering; parks appearing is the system giving up and asking for a human.",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 10 },
+      "targets": [
+        {
+          "expr": "sum by (rung) (rate(artificeworks_messages_retried_total[5m])) * 60",
+          "legendFormat": "retry {{rung}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(artificeworks_messages_parked_total[5m])) * 60",
+          "legendFormat": "parked",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "What is the factory making?",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Units built / passed / scrapped",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "targets": [
+        { "expr": "sum(rate(artificeworks_units_built_total[5m])) * 60", "legendFormat": "built", "refId": "A" },
+        { "expr": "sum(rate(artificeworks_units_passed_total[5m])) * 60", "legendFormat": "passed", "refId": "B" },
+        { "expr": "sum(rate(artificeworks_units_scrapped_total[5m])) * 60", "legendFormat": "scrapped", "refId": "C" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Handler duration (p50 / p95)",
+      "description": "Where the time goes per event type. A trace answers 'where did THIS order's time go'; this answers 'which stage is slow'.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, event_type) (rate(artificeworks_messages_handling_duration_milliseconds_bucket[5m])))",
+          "legendFormat": "p50 {{event_type}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, event_type) (rate(artificeworks_messages_handling_duration_milliseconds_bucket[5m])))",
+          "legendFormat": "p95 {{event_type}}",
+          "refId": "B"
+        }
+      ]
+    }
+  ]
+}

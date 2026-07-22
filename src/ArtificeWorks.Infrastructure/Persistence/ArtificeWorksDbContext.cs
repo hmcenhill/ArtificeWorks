@@ -438,6 +438,16 @@ public class ArtificeWorksDbContext : DbContext
             entity.Property(x => x.LastError)
                 .HasMaxLength(1000);
 
+            // 9.1's trace context. Nullable and unindexed on purpose: they are carried, not
+            // queried by the hot path, and a row staged outside any activity — a background
+            // service, a test — must still publish cleanly, just untraced. 55 chars is the fixed
+            // W3C traceparent length; the cap is documentation as much as a constraint.
+            entity.Property(x => x.TraceParent)
+                .HasMaxLength(55);
+
+            entity.Property(x => x.TraceState)
+                .HasMaxLength(512);
+
             // The dispatcher's only query: unsent rows, in id order. A filtered index keeps it
             // cheap as the sent rows pile up behind it between sweeps.
             entity.HasIndex(x => x.Id)

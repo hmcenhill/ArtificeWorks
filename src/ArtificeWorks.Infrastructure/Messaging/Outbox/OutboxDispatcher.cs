@@ -1,3 +1,6 @@
+using System.Diagnostics;
+
+using ArtificeWorks.Application.Observability;
 using ArtificeWorks.Infrastructure.Persistence;
 
 using Microsoft.EntityFrameworkCore;
@@ -37,15 +40,18 @@ public sealed class OutboxDispatcher : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly OutboxConfiguration _config;
+    private readonly ArtificeWorksMetrics _metrics;
     private readonly ILogger<OutboxDispatcher> _logger;
 
     public OutboxDispatcher(
         IServiceScopeFactory scopeFactory,
         IOptions<OutboxConfiguration> config,
+        ArtificeWorksMetrics metrics,
         ILogger<OutboxDispatcher> logger)
     {
         _scopeFactory = scopeFactory;
         _config = config.Value;
+        _metrics = metrics;
         _logger = logger;
     }
 
@@ -102,11 +108,18 @@ public sealed class OutboxDispatcher : BackgroundService
         // SKIP LOCKED is doing the concurrency control here, so the rows come back already
         // exclusive to this dispatcher for the life of the transaction. They are tracked, so the
         // MarkSent/RecordFailure calls below flush on SaveChanges.
+        // Eligibility is compared against OUR clock, not Postgres's `now()`. Every timestamp on
+        // the row is written by .NET, so mixing in the database's clock was a cross-clock
+        // comparison: a container whose clock lags the host's by a few milliseconds — routine on
+        // Docker Desktop — makes a row with a zero backoff ineligible for a moment, which showed
+        // up as an outbox test that only failed under load. One clock, one answer.
+        var eligibleAsOf = DateTime.UtcNow;
+
         var claimed = await context.OutboxMessages
             .FromSql($"""
                 SELECT * FROM outbox_messages
                 WHERE "SentUtc" IS NULL
-                  AND ("NextAttemptUtc" IS NULL OR "NextAttemptUtc" <= now())
+                  AND ("NextAttemptUtc" IS NULL OR "NextAttemptUtc" <= {eligibleAsOf})
                 ORDER BY "Id"
                 LIMIT {_config.BatchSize}
                 FOR UPDATE SKIP LOCKED
@@ -123,9 +136,14 @@ public sealed class OutboxDispatcher : BackgroundService
         {
             try
             {
+                var started = Stopwatch.GetTimestamp();
+
                 await broker.PublishRawAsync(
                     message.EventType, message.Payload, message.EventId, message.CorrelationId,
-                    headers: null, cancellationToken);
+                    headers: null, parentContext: RestoreTraceContext(message), cancellationToken);
+
+                _metrics.OutboxPublished(
+                    message.EventType, Stopwatch.GetElapsedTime(started).TotalMilliseconds);
 
                 message.MarkSent(DateTime.UtcNow);
             }
@@ -156,6 +174,22 @@ public sealed class OutboxDispatcher : BackgroundService
 
         return claimed.Count;
     }
+
+    /// <summary>
+    /// Rebuilds the activity context the row was staged under (9.1) so the producer span becomes a
+    /// child of the request or delivery that caused the event, rather than the root of a fresh
+    /// one-span trace.
+    /// <para>
+    /// <c>isRemote: true</c> because it is: this thread is not the one that made it, and the gap
+    /// between the two is a database row and up to a poll interval. A row with no captured context
+    /// — staged by a background service, or by a test with no listener attached — returns null and
+    /// publishes untraced. Untraced, never broken: that is the rule.
+    /// </para>
+    /// </summary>
+    private static ActivityContext? RestoreTraceContext(OutboxMessage message) =>
+        ActivityContext.TryParse(message.TraceParent, message.TraceState, isRemote: true, out var context)
+            ? context
+            : null;
 
     private TimeSpan BackoffFor(int attempts)
     {

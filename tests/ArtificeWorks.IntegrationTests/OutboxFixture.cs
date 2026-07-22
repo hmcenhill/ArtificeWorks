@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Messaging;
+using ArtificeWorks.Application.Observability;
 using ArtificeWorks.Infrastructure.Data;
 using ArtificeWorks.Infrastructure.Messaging;
 using ArtificeWorks.Infrastructure.Messaging.Outbox;
@@ -51,6 +53,9 @@ public class OutboxFixture : IAsyncLifetime
         services.AddScoped<IEventPublisher>(sp => sp.GetRequiredService<OutboxEventPublisher>());
 
         services.AddSingleton<IBrokerPublisher>(Broker);
+        services.AddMetrics();
+        services.AddSingleton<PipelineSnapshotCache>();
+        services.AddSingleton<ArtificeWorksMetrics>();
         services.Configure<OutboxConfiguration>(options =>
         {
             options.BatchSize = 10;
@@ -68,6 +73,7 @@ public class OutboxFixture : IAsyncLifetime
     public OutboxDispatcher NewDispatcher() => new(
         Services.GetRequiredService<IServiceScopeFactory>(),
         Services.GetRequiredService<IOptions<OutboxConfiguration>>(),
+        Services.GetRequiredService<ArtificeWorksMetrics>(),
         Services.GetRequiredService<Microsoft.Extensions.Logging.ILogger<OutboxDispatcher>>());
 
     /// <summary>A context outside any workflow scope, for arranging and asserting.</summary>
@@ -90,12 +96,12 @@ public class OutboxFixture : IAsyncLifetime
 /// </summary>
 public sealed class ScriptableBrokerPublisher : IBrokerPublisher
 {
-    private readonly ConcurrentQueue<(string RoutingKey, Guid EventId, Guid CorrelationId, string Payload)> _published = new();
+    private readonly ConcurrentQueue<PublishedMessage> _published = new();
 
     /// <summary>When true, every publish throws — the broker outage.</summary>
     public bool IsDown { get; set; }
 
-    public IReadOnlyList<(string RoutingKey, Guid EventId, Guid CorrelationId, string Payload)> Published => _published.ToList();
+    public IReadOnlyList<PublishedMessage> Published => _published.ToList();
 
     public Task PublishRawAsync(
         string routingKey,
@@ -103,6 +109,7 @@ public sealed class ScriptableBrokerPublisher : IBrokerPublisher
         Guid eventId,
         Guid correlationId,
         IDictionary<string, object?>? headers = null,
+        ActivityContext? parentContext = null,
         CancellationToken cancellationToken = default)
     {
         if (IsDown)
@@ -110,7 +117,13 @@ public sealed class ScriptableBrokerPublisher : IBrokerPublisher
             throw new InvalidOperationException("Broker is unreachable.");
         }
 
-        _published.Enqueue((routingKey, eventId, correlationId, payload));
+        // The trace context is recorded, not ignored: 9.1's claim is that the dispatcher restores
+        // the activity the row was STAGED under, and this is the only place a test can see what
+        // was actually handed to the wire.
+        _published.Enqueue(new PublishedMessage(routingKey, eventId, correlationId, payload, parentContext));
         return Task.CompletedTask;
     }
 }
+
+public sealed record PublishedMessage(
+    string RoutingKey, Guid EventId, Guid CorrelationId, string Payload, ActivityContext? ParentContext);

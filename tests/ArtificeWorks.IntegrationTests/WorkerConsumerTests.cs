@@ -1,14 +1,17 @@
+using System.Diagnostics;
 using System.Text.Json;
 
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Materials;
 using ArtificeWorks.Application.Messaging;
+using ArtificeWorks.Application.Observability;
 using ArtificeWorks.Application.Messaging.Events;
 using ArtificeWorks.Domain.Models;
 using ArtificeWorks.Domain.Models.Materials;
 using ArtificeWorks.Domain.Models.Shipping;
 using ArtificeWorks.Infrastructure.Data;
 using ArtificeWorks.Infrastructure.Messaging;
+using ArtificeWorks.Infrastructure.Observability;
 using ArtificeWorks.Infrastructure.Persistence;
 using ArtificeWorks.Infrastructure.Workflow;
 using ArtificeWorks.Workers.Consuming;
@@ -76,6 +79,11 @@ public class WorkerConsumerTests : IAsyncLifetime
 
         var builder = Host.CreateApplicationBuilder();
         builder.Configuration.AddInMemoryCollection(settings);
+
+        // Telemetry, registered exactly as the worker host registers it (9.1). No OTLP endpoint is
+        // configured, so nothing leaves the process — but the ActivitySource, the meter and the
+        // metrics recorder every service now depends on are all real.
+        builder.AddArtificeWorksTelemetry(ArtificeWorksTelemetry.WorkerServiceName);
 
         builder.Services.AddDbContext<ArtificeWorksDbContext>(options =>
             options.UseNpgsql(_postgres.GetConnectionString()));
@@ -298,6 +306,96 @@ public class WorkerConsumerTests : IAsyncLifetime
         Assert.Equal(correlationId, finished.CorrelationId);
         Assert.Equal(2, finished.Payload.SerialNumbers.Count);
         Assert.False(string.IsNullOrWhiteSpace(finished.Payload.Carrier));
+    }
+
+    /// <summary>
+    /// 9.1's headline acceptance criterion, over a real broker: <strong>one work order, one
+    /// trace</strong>. The producer span the outbox dispatcher opens and the consumer span the
+    /// worker opens must share a trace id and be parent and child — not two neatly instrumented,
+    /// completely unrelated traces, which is what a default integration produces here.
+    /// </summary>
+    [Fact]
+    public async Task A_work_order_crossing_the_broker_stays_in_one_trace()
+    {
+        var spans = new List<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == ArtificeWorksTelemetry.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activity => { lock (spans) { spans.Add(activity); } }
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        var product = new Product("PRD-TRACE-E2E", "Traced Automaton");
+        var chassis = new Component("CMP-TRACE-CHASSIS", "Chassis", onHand: 10);
+        product.AddBomLine(chassis, qtyPerUnit: 1);
+
+        Guid workOrderId;
+        using (var scope = _host.Services.CreateScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<ArtificeWorksDbContext>();
+            var workOrder = new WorkOrder("seed", product, 1);
+            workOrder.AdvanceToNextStep("seed");
+            context.Products.Add(product);
+            context.Components.Add(chassis);
+            context.WorkOrders.Add(workOrder);
+            await context.SaveChangesAsync();
+            workOrderId = workOrder.Id;
+        }
+
+        // The "request": one activity, inside which the event is staged and committed. Everything
+        // downstream — dispatcher, broker, handler, the next stage's publish — has to end up under
+        // this trace id or the outbox has broken the chain.
+        string traceId;
+        using (var request = ArtificeWorksTelemetry.ActivitySource.StartActivity("test request"))
+        {
+            Assert.NotNull(request);
+            traceId = request!.TraceId.ToString();
+
+            using var scope = _host.Services.CreateScope();
+            scope.ServiceProvider.GetRequiredService<CorrelationContext>().CorrelationId = Guid.NewGuid();
+            await scope.ServiceProvider.GetRequiredService<IEventPublisher>().PublishAsync(
+                new WorkOrderScheduled(workOrderId, product.ItemId, product.ItemName, 1, DateTime.UtcNow));
+            await scope.ServiceProvider.GetRequiredService<ArtificeWorksDbContext>().SaveChangesAsync();
+        }
+
+        var completed = await Poll(async () =>
+        {
+            using var scope = _host.Services.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<ArtificeWorksDbContext>();
+            var order = await context.WorkOrders.AsNoTracking().SingleAsync(wo => wo.Id == workOrderId);
+            return order.CurrentStatus == WorkOrderStatus.Completed ? order : null;
+        });
+        Assert.NotNull(completed);
+
+        List<Activity> captured;
+        lock (spans) { captured = [.. spans]; }
+
+        var ours = captured.Where(span => span.TraceId.ToString() == traceId).ToList();
+
+        // At least one producer and one consumer span, all under the one trace the request opened.
+        Assert.Contains(ours, span => span.Kind == ActivityKind.Producer);
+        Assert.Contains(ours, span => span.Kind == ActivityKind.Consumer);
+
+        // The consumer span for the FIRST hop is a child of the producer span that published it —
+        // the specific edge the outbox would otherwise have severed.
+        var producer = ours.First(span => span.Kind == ActivityKind.Producer
+            && span.OperationName.EndsWith("work-order.scheduled", StringComparison.Ordinal));
+        var consumer = ours.First(span => span.Kind == ActivityKind.Consumer
+            && span.OperationName.EndsWith("work-order.scheduled", StringComparison.Ordinal));
+
+        Assert.Equal(producer.SpanId.ToString(), consumer.ParentSpanId.ToString());
+
+        // Spans carry the ids that make a trace searchable by something a human knows.
+        Assert.Contains(ours, span => span.GetTagItem(ArtificeWorksTelemetry.WorkOrderIdAttribute) is string id
+            && id == workOrderId.ToString());
+        Assert.All(ours.Where(span => span.Kind != ActivityKind.Internal), span =>
+            Assert.NotNull(span.GetTagItem(ArtificeWorksTelemetry.CorrelationIdAttribute)));
+
+        // Every later stage — picking, production, inspection, shipping, dispatch — joined it too,
+        // rather than starting fresh at each commit.
+        Assert.True(ours.Count(span => span.Kind == ActivityKind.Consumer) >= 5,
+            $"expected the whole pipeline under one trace; saw {ours.Count(s => s.Kind == ActivityKind.Consumer)} consumer span(s)");
     }
 
     private async Task<EventEnvelope<T>?> ReadEvent<T>(string queue) where T : IntegrationEvent

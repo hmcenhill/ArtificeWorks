@@ -26,13 +26,22 @@ public class OutboxMessage
         Payload = null!;
     }
 
-    public OutboxMessage(Guid eventId, string eventType, Guid correlationId, string payload, DateTime occurredUtc)
+    public OutboxMessage(
+        Guid eventId,
+        string eventType,
+        Guid correlationId,
+        string payload,
+        DateTime occurredUtc,
+        string? traceParent = null,
+        string? traceState = null)
     {
         EventId = eventId;
         EventType = eventType;
         CorrelationId = correlationId;
         Payload = payload;
         OccurredUtc = occurredUtc;
+        TraceParent = traceParent;
+        TraceState = traceState;
     }
 
     /// <summary>
@@ -55,6 +64,29 @@ public class OutboxMessage
     public string Payload { get; private set; }
 
     public DateTime OccurredUtc { get; private set; }
+
+    /// <summary>
+    /// The W3C <c>traceparent</c> of the activity this row was staged inside (9.1), captured for
+    /// exactly the same reason <see cref="CorrelationId"/> is.
+    /// <para>
+    /// <strong>Without this, every trace in the system ends at a commit.</strong> 8.1 moved
+    /// publishing from after the transaction to staged inside it, so the event goes on the wire up
+    /// to a second later, on a background thread, with no ambient activity at all — and a default
+    /// OpenTelemetry setup would happily start a fresh, parentless one-span trace for each publish.
+    /// Fully instrumented, entirely disconnected, and it looks correct right up until you try to
+    /// follow an order across a stage boundary. Captured at stage time, restored at publish time.
+    /// </para>
+    /// <para>
+    /// <strong>A column, not a field in the payload.</strong> The payload is the domain event and
+    /// 8.3 replays it verbatim; transport metadata inside it would mean a replayed message carries
+    /// a stale, long-closed trace. Columns are also queryable, which 9.4's runbook needs.
+    /// </para>
+    /// <para>Nullable: a row staged with no ambient activity publishes untraced, never broken.</para>
+    /// </summary>
+    public string? TraceParent { get; private set; }
+
+    /// <summary>Vendor trace state travelling with <see cref="TraceParent"/>. Almost always null here.</summary>
+    public string? TraceState { get; private set; }
 
     /// <summary>Null until the dispatcher has published it. Rows are marked, not deleted — see the sweep.</summary>
     public DateTime? SentUtc { get; private set; }

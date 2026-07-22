@@ -1,6 +1,9 @@
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Messaging;
+using System.Diagnostics;
+
 using ArtificeWorks.Application.Messaging.Events;
+using ArtificeWorks.Application.Observability;
 using ArtificeWorks.Domain.Models.Materials;
 using ArtificeWorks.Domain.Models.Production;
 
@@ -43,17 +46,20 @@ public sealed class ProductionService
     private readonly IWorkOrderRepository _workOrderRepository;
     private readonly IProductionRunRepository _runRepository;
     private readonly IEventPublisher _eventPublisher;
+    private readonly ArtificeWorksMetrics _metrics;
     private readonly ILogger<ProductionService> _logger;
 
     public ProductionService(
         IWorkOrderRepository workOrderRepository,
         IProductionRunRepository runRepository,
         IEventPublisher eventPublisher,
+        ArtificeWorksMetrics metrics,
         ILogger<ProductionService> logger)
     {
         _workOrderRepository = workOrderRepository;
         _runRepository = runRepository;
         _eventPublisher = eventPublisher;
+        _metrics = metrics;
         _logger = logger;
     }
 
@@ -65,6 +71,9 @@ public sealed class ProductionService
         int attemptNumber,
         CancellationToken cancellationToken = default)
     {
+        ArtificeWorksTelemetry.StampWorkOrder(workOrderId);
+        Activity.Current?.SetTag(ArtificeWorksTelemetry.AttemptAttribute, attemptNumber);
+
         var workOrder = await _workOrderRepository.GetWithHistory(workOrderId);
         if (workOrder is null)
         {
@@ -81,6 +90,7 @@ public sealed class ProductionService
         }
 
         var outstanding = workOrder.OutstandingQty;
+        var from = workOrder.CurrentStatus;
         var build = workOrder.Build(Author, attemptNumber,
             Truncate(attemptNumber == 1
                 ? $"Production started: building {outstanding} unit(s)."
@@ -120,6 +130,12 @@ public sealed class ProductionService
         {
             return AlreadyBuilt(workOrderId, attemptNumber);
         }
+
+        // Counted after the commit succeeded, not after the domain call: a losing duplicate rolls
+        // its units back, and a counter that moved anyway is exactly the double-count 9.2's tests
+        // look for.
+        _metrics.Transition(from.ToString(), workOrder.CurrentStatus.ToString());
+        _metrics.UnitsBuilt(built.Count, attemptNumber);
 
         var summary = $"Built {built.Count} unit(s) on attempt {attemptNumber}.";
         _logger.LogInformation(

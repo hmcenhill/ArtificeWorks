@@ -1,24 +1,27 @@
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Materials;
 using ArtificeWorks.Application.Messaging.Events;
+using ArtificeWorks.Application.Observability;
 using ArtificeWorks.Infrastructure.Data;
 using ArtificeWorks.Infrastructure.Messaging;
+using ArtificeWorks.Infrastructure.Observability;
 using ArtificeWorks.Infrastructure.Persistence;
 using ArtificeWorks.Infrastructure.Workflow;
 using ArtificeWorks.Workers.Consuming;
 using ArtificeWorks.Workers.Handlers;
+using ArtificeWorks.Workers.Health;
 
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 
 var builder = Host.CreateApplicationBuilder(args);
 
-// Render logging scopes so the correlation id the consumer pushes per delivery prefixes
-// every log line — grepping one id spans the API and worker sides. See docs/messaging-topology.md.
-builder.Logging.AddSimpleConsole(options => options.IncludeScopes = true);
+// The same call the API makes (9.1) — same resource shape, same exporter, same sampler, same
+// console scope rendering. One trace spans both services only if both are configured identically,
+// which is why this is one extension and not two blocks of setup. See docs/observability.md.
+builder.AddArtificeWorksTelemetry(ArtificeWorksTelemetry.WorkerServiceName);
 
 var connectionString = builder.Configuration.GetConnectionString("ArtificeWorksDatabase")
     ?? throw new InvalidOperationException("Connection string 'ArtificeWorksDatabase' was not found.");
@@ -67,6 +70,12 @@ builder.Services.AddEventHandler<ReworkRequired, ReworkRequiredHandler>();
 // work-order.completed is the terminal announcement and binds to nobody.
 builder.Services.AddEventHandler<InspectionPassed, InspectionPassedHandler>();
 builder.Services.AddEventHandler<ShipmentScheduled, ShipmentScheduledHandler>();
+
+// Health (9.4). The worker had no health signal at all, and it is the half more likely to be
+// wedged — a consumer that has quietly stopped consuming is silent, which is the failure mode this
+// milestone exists to remove. Same checks as the API, over a deliberately tiny HTTP listener.
+builder.Services.AddArtificeWorksHealthChecks();
+builder.Services.AddHostedService<WorkerHealthEndpoint>();
 
 var host = builder.Build();
 host.Run();

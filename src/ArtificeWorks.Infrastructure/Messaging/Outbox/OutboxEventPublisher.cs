@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 
 using ArtificeWorks.Application.Messaging;
@@ -57,9 +58,10 @@ public sealed class OutboxEventPublisher : IEventPublisher, IRawEventPublisher
         var payload = JsonSerializer.Serialize(envelope, RabbitMqEventPublisher.SerializerOptions);
 
         _context.OutboxMessages.Add(new OutboxMessage(
-            envelope.EventId, envelope.EventType, envelope.CorrelationId, payload, envelope.OccurredUtc));
+            envelope.EventId, envelope.EventType, envelope.CorrelationId, payload, envelope.OccurredUtc,
+            Activity.Current?.Id, Activity.Current?.TraceStateString));
 
-        _logger.LogInformation(
+        _logger.LogDebug(
             "Queued {EventType} ({EventId}) [correlation {CorrelationId}] to the outbox.",
             envelope.EventType, envelope.EventId, envelope.CorrelationId);
 
@@ -71,9 +73,10 @@ public sealed class OutboxEventPublisher : IEventPublisher, IRawEventPublisher
         var eventId = Guid.NewGuid();
 
         _context.OutboxMessages.Add(new OutboxMessage(
-            eventId, eventType, correlationId, payload, DateTime.UtcNow));
+            eventId, eventType, correlationId, payload, DateTime.UtcNow,
+            Activity.Current?.Id, Activity.Current?.TraceStateString));
 
-        _logger.LogInformation(
+        _logger.LogDebug(
             "Queued raw {EventType} ({EventId}) [correlation {CorrelationId}] to the outbox.",
             eventType, eventId, correlationId);
 

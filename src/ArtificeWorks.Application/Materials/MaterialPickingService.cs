@@ -1,6 +1,7 @@
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Messaging;
 using ArtificeWorks.Application.Messaging.Events;
+using ArtificeWorks.Application.Observability;
 using ArtificeWorks.Domain.Models.Materials;
 
 using Microsoft.Extensions.Logging;
@@ -32,6 +33,7 @@ public sealed class MaterialPickingService
     private readonly IProductRepository _productRepository;
     private readonly IMaterialReservationRepository _reservationRepository;
     private readonly IEventPublisher _eventPublisher;
+    private readonly ArtificeWorksMetrics _metrics;
     private readonly ILogger<MaterialPickingService> _logger;
 
     public MaterialPickingService(
@@ -39,17 +41,22 @@ public sealed class MaterialPickingService
         IProductRepository productRepository,
         IMaterialReservationRepository reservationRepository,
         IEventPublisher eventPublisher,
+        ArtificeWorksMetrics metrics,
         ILogger<MaterialPickingService> logger)
     {
         _workOrderRepository = workOrderRepository;
         _productRepository = productRepository;
         _reservationRepository = reservationRepository;
         _eventPublisher = eventPublisher;
+        _metrics = metrics;
         _logger = logger;
     }
 
     public async Task<PickResult> PickMaterials(Guid workOrderId, CancellationToken cancellationToken = default)
     {
+        // Makes the consumer span findable by the one identifier a visitor has (9.1).
+        ArtificeWorksTelemetry.StampWorkOrder(workOrderId);
+
         var workOrder = await _workOrderRepository.GetWithHistory(workOrderId);
         if (workOrder is null)
         {
@@ -130,6 +137,8 @@ public sealed class MaterialPickingService
     {
         var summary = $"Materials picked: {reservation.Describe()}.";
 
+        _metrics.Pick("picked");
+
         _logger.LogInformation(
             "Reserved {LineCount} component line(s) for work order {WorkOrderId}: {Reserved}",
             demand.Count, workOrder.Id, reservation.Describe());
@@ -143,9 +152,12 @@ public sealed class MaterialPickingService
             ? "Insufficient stock; no materials reserved."
             : $"Insufficient stock for {string.Join(", ", shortComponentIds)}; no materials reserved.";
 
+        _metrics.Pick("insufficient_stock");
+
         // Nothing was drawn — the reservation transaction rolled back — so the order simply
         // waits. Releasing the hold (once stock arrives) re-runs picking in a later epic;
         // for now a human releases it via the existing endpoint.
+        var from = workOrder.CurrentStatus;
         var hold = workOrder.SetHold(Author, Truncate(summary));
         if (!hold.Success)
         {
@@ -156,7 +168,11 @@ public sealed class MaterialPickingService
         }
         else
         {
-            _logger.LogInformation("Work order {WorkOrderId} placed OnHold: {Reason}", workOrder.Id, summary);
+            _metrics.Transition(from.ToString(), workOrder.CurrentStatus.ToString());
+
+            // Warning, not Information: a hold is the pipeline stopping, and the levelling rule
+            // for this epic is that anything a visitor would want to react to is at least Warning.
+            _logger.LogWarning("Work order {WorkOrderId} placed OnHold: {Reason}", workOrder.Id, summary);
         }
 
         await _workOrderRepository.Update(workOrder);
@@ -174,6 +190,7 @@ public sealed class MaterialPickingService
             ? $"Work order {workOrderId} was picked concurrently by another delivery; skipping duplicate."
             : $"Work order {workOrderId} was already picked at {reservedUtc:O}; skipping duplicate.";
 
+        _metrics.Pick("duplicate");
         _logger.LogInformation("Duplicate pick skipped (idempotent): {Summary}", summary);
         return new PickResult(PickOutcome.AlreadyPicked, summary);
     }

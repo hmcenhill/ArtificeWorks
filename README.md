@@ -9,6 +9,7 @@ This repository is the event-driven system that runs the factory: work order sch
 ## Documentation
 
 - [Messaging topology](docs/messaging-topology.md) — RabbitMQ exchange, queues, bindings, message shape, and how a correlation id threads one work order's story through both services' logs.
+- [Observability](docs/observability.md) — the runbook: which of the four surfaces answers which question, how to bring the telemetry stack up locally, and **"what happened to work order X?"** worked end to end with runnable queries.
 
 ## Local infrastructure
 
@@ -20,6 +21,8 @@ This project uses Docker Compose for local development infrastructure.
 - RabbitMQ AMQP: `localhost:5672`
 - RabbitMQ Management UI: `http://localhost:15672`
 - Redis: `localhost:6379`
+- Grafana (traces, metrics, logs): `http://localhost:3000`
+- OTLP ingest: `localhost:4317` (gRPC), `localhost:4318` (HTTP)
 
 ### Default credentials
 

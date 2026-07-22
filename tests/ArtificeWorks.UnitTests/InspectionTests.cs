@@ -305,14 +305,17 @@ public class InspectionTests
             var orders = new SingleWorkOrderRepository(WorkOrder);
             _verdicts = new ScriptedVerdictSource(failEverything);
 
+            var metrics = TestData.Metrics();
+
             _production = new ProductionService(
-                orders, new FakeProductionRunRepository(), Published,
+                orders, new FakeProductionRunRepository(), Published, metrics,
                 NullLogger<ProductionService>.Instance);
 
             _inspection = new InspectionService(
                 orders, new FakeInspectionRunRepository(), _verdicts, Published,
                 new InspectionConfiguration { AutoInspect = autoInspect },
                 new ProductionConfiguration { MaxRebuildAttempts = maxRebuildAttempts },
+                metrics,
                 NullLogger<InspectionService>.Instance);
         }
 

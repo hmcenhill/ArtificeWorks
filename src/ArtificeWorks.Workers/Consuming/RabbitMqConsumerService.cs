@@ -1,11 +1,16 @@
+using System.Diagnostics;
 using System.Text;
 
 using ArtificeWorks.Application.Messaging;
+using ArtificeWorks.Application.Observability;
 using ArtificeWorks.Infrastructure.Messaging;
 
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+
+using OpenTelemetry;
+using OpenTelemetry.Context.Propagation;
 
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
@@ -49,6 +54,7 @@ public sealed class RabbitMqConsumerService : BackgroundService
     private readonly RabbitMqRawPublisher _publisher;
     private readonly RabbitMqConfiguration _config;
     private readonly RetryConfiguration _retry;
+    private readonly ArtificeWorksMetrics _metrics;
     private readonly ILogger<RabbitMqConsumerService> _logger;
 
     private IChannel? _channel;
@@ -59,6 +65,7 @@ public sealed class RabbitMqConsumerService : BackgroundService
         RabbitMqRawPublisher publisher,
         IOptions<RabbitMqConfiguration> config,
         IOptions<RetryConfiguration> retry,
+        ArtificeWorksMetrics metrics,
         ILogger<RabbitMqConsumerService> logger)
     {
         _connection = connection;
@@ -66,6 +73,7 @@ public sealed class RabbitMqConsumerService : BackgroundService
         _publisher = publisher;
         _config = config.Value;
         _retry = retry.Value;
+        _metrics = metrics;
         _logger = logger;
     }
 
@@ -178,6 +186,29 @@ public sealed class RabbitMqConsumerService : BackgroundService
         var eventType = eventArgs.RoutingKey;
         var attempt = ReadAttempt(eventArgs.BasicProperties);
 
+        // The other half of 9.1's AMQP hop. Extracted with the standard propagator, so the
+        // consumer span is a child of the producer span the outbox dispatcher opened — and a
+        // message that climbed a rung of the retry ladder rejoins the ORIGINAL trace rather than
+        // starting a third one, because the ladder republishes from inside this very span.
+        var incoming = Propagators.DefaultTextMapPropagator.Extract(
+            default, eventArgs.BasicProperties.Headers, ReadHeader);
+
+        Baggage.Current = incoming.Baggage;
+
+        using var activity = ArtificeWorksTelemetry.ActivitySource.StartActivity(
+            $"process {eventType}", ActivityKind.Consumer, incoming.ActivityContext);
+
+        activity?.SetTag(ArtificeWorksTelemetry.MessagingSystem, ArtificeWorksTelemetry.RabbitMq);
+        activity?.SetTag(ArtificeWorksTelemetry.MessagingOperation, "process");
+        activity?.SetTag(ArtificeWorksTelemetry.MessagingDestination, QueueName);
+        activity?.SetTag(ArtificeWorksTelemetry.MessagingMessageId, eventArgs.BasicProperties.MessageId);
+        activity?.SetTag(ArtificeWorksTelemetry.EventTypeAttribute, eventType);
+        activity?.SetTag(ArtificeWorksTelemetry.AttemptAttribute, attempt);
+        activity?.SetTag(ArtificeWorksTelemetry.CorrelationIdAttribute, eventArgs.BasicProperties.CorrelationId);
+
+        var started = Stopwatch.GetTimestamp();
+        var outcome = "acked";
+
         // The publisher stamps the envelope's correlation id onto the AMQP correlation_id
         // property, so we open the log scope from message metadata alone — no need to
         // deserialize the body first. The thread survives every hop of the ladder because the
@@ -193,13 +224,33 @@ public sealed class RabbitMqConsumerService : BackgroundService
             }
             catch (PoisonMessageException e)
             {
+                outcome = "parked";
+                activity?.SetStatus(ActivityStatusCode.Error, e.Message);
                 await ParkAsync(eventArgs, eventType, attempt, e, "the message is permanently unhandleable");
             }
             catch (Exception e)
             {
+                outcome = attempt > _retry.MaxAttempts ? "parked" : "retried";
+                activity?.SetStatus(ActivityStatusCode.Error, e.Message);
                 await RetryOrParkAsync(eventArgs, eventType, attempt, e);
             }
+
+            _metrics.MessageHandled(eventType, outcome, Stopwatch.GetElapsedTime(started).TotalMilliseconds);
         }
+    }
+
+    /// <summary>
+    /// Reads a propagation header off an AMQP delivery. The client hands string headers back as
+    /// <c>byte[]</c>, which is why this cannot just be a dictionary lookup.
+    /// </summary>
+    private static IEnumerable<string> ReadHeader(IDictionary<string, object?>? headers, string key)
+    {
+        if (headers is null || !headers.TryGetValue(key, out var value) || value is null)
+        {
+            return [];
+        }
+
+        return [value is byte[] bytes ? Encoding.UTF8.GetString(bytes) : value.ToString() ?? string.Empty];
     }
 
     /// <summary>
@@ -229,9 +280,15 @@ public sealed class RabbitMqConsumerService : BackgroundService
                 headers: HeadersWithAttempt(eventArgs.BasicProperties, attempt + 1),
                 cancellationToken: eventArgs.CancellationToken);
 
-            _logger.LogInformation(
-                "Handling {EventType} failed on attempt {Attempt} ({Reason}); retrying in {Delay} via {Exchange}.",
-                eventType, attempt, failure.Message, _retry.LabelFor(rung), _retry.ExchangeFor(rung));
+            _metrics.MessageRetried(eventType, _retry.LabelFor(rung));
+
+            // Warning, not Information (9.3's levelling pass): a retry is the pipeline visibly
+            // recovering, and it is one of the lines Epic 12's audience is watching for. The
+            // exception goes in the exception parameter so a backend can index it, rather than
+            // being pasted into the message.
+            _logger.LogWarning(failure,
+                "Handling {EventType} failed on attempt {Attempt}; retrying in {Delay} via {Exchange}.",
+                eventType, attempt, _retry.LabelFor(rung), _retry.ExchangeFor(rung));
 
             await _channel!.BasicAckAsync(eventArgs.DeliveryTag, multiple: false, eventArgs.CancellationToken);
         }
@@ -254,6 +311,8 @@ public sealed class RabbitMqConsumerService : BackgroundService
     private async Task ParkAsync(
         BasicDeliverEventArgs eventArgs, string eventType, int attempt, Exception failure, string why)
     {
+        _metrics.MessageParked(eventType);
+
         _logger.LogWarning(failure,
             "Parking {EventType} after {Attempt} attempt(s): {Why}. It is now a dead letter awaiting a human.",
             eventType, attempt, why);

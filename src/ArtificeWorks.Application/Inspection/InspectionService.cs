@@ -1,6 +1,9 @@
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Messaging;
+using System.Diagnostics;
+
 using ArtificeWorks.Application.Messaging.Events;
+using ArtificeWorks.Application.Observability;
 using ArtificeWorks.Application.Production;
 using ArtificeWorks.Domain.Models;
 using ArtificeWorks.Domain.Models.Materials;
@@ -37,6 +40,7 @@ public sealed class InspectionService
     private readonly IEventPublisher _eventPublisher;
     private readonly InspectionConfiguration _inspectionConfig;
     private readonly ProductionConfiguration _productionConfig;
+    private readonly ArtificeWorksMetrics _metrics;
     private readonly ILogger<InspectionService> _logger;
 
     public InspectionService(
@@ -46,8 +50,10 @@ public sealed class InspectionService
         IEventPublisher eventPublisher,
         InspectionConfiguration inspectionConfig,
         ProductionConfiguration productionConfig,
+        ArtificeWorksMetrics metrics,
         ILogger<InspectionService> logger)
     {
+        _metrics = metrics;
         _workOrderRepository = workOrderRepository;
         _runRepository = runRepository;
         _verdicts = verdicts;
@@ -68,6 +74,9 @@ public sealed class InspectionService
         int attemptNumber,
         CancellationToken cancellationToken = default)
     {
+        ArtificeWorksTelemetry.StampWorkOrder(workOrderId);
+        Activity.Current?.SetTag(ArtificeWorksTelemetry.AttemptAttribute, attemptNumber);
+
         var workOrder = await _workOrderRepository.GetWithHistory(workOrderId);
         if (workOrder is null)
         {
@@ -82,6 +91,11 @@ public sealed class InspectionService
             return AlreadyInspected(workOrderId, attemptNumber);
         }
 
+        // Transitions are recorded here and counted only once the run row commits: a losing
+        // duplicate takes its verdicts, its transition and its announcement down with it (6.4),
+        // and a counter that moved anyway would be a lie about work that never happened.
+        var transitions = new List<(string From, string To)>();
+
         if (workOrder.CurrentStatus == WorkOrderStatus.InProcess)
         {
             var advance = workOrder.AdvanceToNextStep(Author,
@@ -90,6 +104,8 @@ public sealed class InspectionService
             {
                 return Rejected(workOrder, attemptNumber, advance.Error!);
             }
+
+            transitions.Add((nameof(WorkOrderStatus.InProcess), workOrder.CurrentStatus.ToString()));
         }
         else if (workOrder.CurrentStatus != WorkOrderStatus.Inspection)
         {
@@ -148,9 +164,24 @@ public sealed class InspectionService
             return AlreadyInspected(workOrderId, attemptNumber);
         }
 
+        _metrics.Verdicts(passed, scrapped);
+        RecordTransitions(transitions, resolution);
+
         _logger.LogInformation(
             "Work order {WorkOrderId} attempt {Attempt}: {Passed} passed, {Scrapped} scrapped — {Outcome}.",
             workOrderId, attemptNumber, passed, scrapped, resolution.Outcome);
+
+        // The levelling rule (9.3): rework is the pipeline recovering, a fault is it giving up.
+        // These are the two lines Epic 12's audience is watching for, and neither was above
+        // Information before.
+        if (resolution.Outcome == InspectionOutcome.Faulted)
+        {
+            _logger.LogError("Work order {WorkOrderId} FAULTED: {Reason}", workOrderId, resolution.Summary);
+        }
+        else if (resolution.Outcome == InspectionOutcome.ReworkRequired)
+        {
+            _logger.LogWarning("Work order {WorkOrderId} needs rework: {Reason}", workOrderId, resolution.Summary);
+        }
 
         return new InspectionResult(resolution.Outcome, resolution.Summary, attemptNumber, passed, scrapped);
     }
@@ -215,6 +246,11 @@ public sealed class InspectionService
         await PublishResolution(workOrder, resolution, cancellationToken);
         await _workOrderRepository.Update(workOrder);
 
+        // One unit, one verdict — the same instruments the automatic path uses, so a factory run
+        // by a visitor and one run unattended produce identical metrics as well as identical state.
+        _metrics.Verdicts(passed ? 1 : 0, passed ? 0 : 1);
+        RecordTransitions([], resolution);
+
         _logger.LogInformation(
             "Manual verdict by {RecordedBy} on unit {Serial} of work order {WorkOrderId}: {Summary} — {Outcome}.",
             recordedBy, serialNumber, workOrderId, summary, resolution.Outcome);
@@ -224,7 +260,27 @@ public sealed class InspectionService
 
     // ------------------------------------------------------------------- shared resolution
 
-    private sealed record Resolution(InspectionOutcome Outcome, string Summary);
+    /// <param name="From">
+    /// The status the order left, when the resolution moved it. Carried on the resolution rather
+    /// than counted inside <see cref="Resolve"/> so the counter fires after the commit, next to
+    /// every other transition count — see the note in <c>InspectAttempt</c>.
+    /// </param>
+    private sealed record Resolution(
+        InspectionOutcome Outcome, string Summary, string? From = null, string? To = null);
+
+    /// <summary>Flushes the transitions a committed inspection actually performed. One count each, once.</summary>
+    private void RecordTransitions(List<(string From, string To)> transitions, Resolution resolution)
+    {
+        foreach (var (from, to) in transitions)
+        {
+            _metrics.Transition(from, to);
+        }
+
+        if (resolution is { From: not null, To: not null })
+        {
+            _metrics.Transition(resolution.From, resolution.To);
+        }
+    }
 
     /// <summary>
     /// Decides what the order does now that some verdicts are in, and applies it. Three ways
@@ -238,6 +294,8 @@ public sealed class InspectionService
     /// </summary>
     private Resolution Resolve(WorkOrder workOrder, string author)
     {
+        var from = workOrder.CurrentStatus.ToString();
+
         if (workOrder.IsFulfilled)
         {
             var advance = workOrder.AdvanceToNextStep(author,
@@ -245,7 +303,8 @@ public sealed class InspectionService
 
             return advance.Success
                 ? new Resolution(InspectionOutcome.Passed,
-                    $"Full ordered quantity passed; work order advanced to {workOrder.CurrentStatus}.")
+                    $"Full ordered quantity passed; work order advanced to {workOrder.CurrentStatus}.",
+                    from, workOrder.CurrentStatus.ToString())
                 : new Resolution(InspectionOutcome.Rejected, advance.Error!);
         }
 
@@ -267,7 +326,7 @@ public sealed class InspectionService
 
             var faulted = workOrder.Fault(author, reason);
             return faulted.Success
-                ? new Resolution(InspectionOutcome.Faulted, reason)
+                ? new Resolution(InspectionOutcome.Faulted, reason, from, workOrder.CurrentStatus.ToString())
                 : new Resolution(InspectionOutcome.Rejected, faulted.Error!);
         }
 
@@ -277,7 +336,8 @@ public sealed class InspectionService
 
         return returned.Success
             ? new Resolution(InspectionOutcome.ReworkRequired,
-                $"{outstanding} unit(s) short after attempt {workOrder.BuildAttempt}; rebuild required.")
+                $"{outstanding} unit(s) short after attempt {workOrder.BuildAttempt}; rebuild required.",
+                from, workOrder.CurrentStatus.ToString())
             : new Resolution(InspectionOutcome.Rejected, returned.Error!);
     }
 

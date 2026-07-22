@@ -1,7 +1,13 @@
+using System.Diagnostics;
 using System.Text;
+
+using ArtificeWorks.Application.Observability;
 
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+
+using OpenTelemetry;
+using OpenTelemetry.Context.Propagation;
 
 using RabbitMQ.Client;
 
@@ -12,6 +18,13 @@ namespace ArtificeWorks.Infrastructure.Messaging;
 /// nothing about envelopes, events, or correlation contexts — which is what lets it be a
 /// singleton, and is why the outbox dispatcher and 8.2's retry ladder (both background loops with
 /// no ambient request) can use it directly.
+/// <para>
+/// <strong>It is also the only place trace context crosses into AMQP</strong> (9.1). One producer
+/// span per publish, and a <c>traceparent</c> / <c>baggage</c> pair injected into the message
+/// headers by the standard <see cref="TraceContextPropagator"/> rather than by hand-rolled
+/// headers — so the consumer on the other side extracts them with the same standard code and the
+/// hop renders as a parent/child edge instead of two unrelated traces.
+/// </para>
 /// </summary>
 public sealed class RabbitMqRawPublisher : IBrokerPublisher
 {
@@ -35,14 +48,22 @@ public sealed class RabbitMqRawPublisher : IBrokerPublisher
         Guid eventId,
         Guid correlationId,
         IDictionary<string, object?>? headers = null,
+        ActivityContext? parentContext = null,
         CancellationToken cancellationToken = default)
-        => PublishToAsync(_config.ExchangeName, routingKey, payload, eventId, correlationId, headers, cancellationToken);
+        => PublishToAsync(_config.ExchangeName, routingKey, payload, eventId, correlationId, headers,
+            parentContext, cancellationToken);
 
     /// <summary>
     /// Publishes to a named exchange rather than the shared one. 8.2's ladder uses it to push a
     /// failed delivery onto a delay exchange, and the empty string to route a parked message
     /// straight to a queue through the default exchange.
     /// </summary>
+    /// <param name="parentContext">
+    /// The trace to publish under when there is no ambient one — which is the outbox dispatcher's
+    /// whole situation (9.1). Null means "use <see cref="Activity.Current"/>", which is what the
+    /// retry ladder and the parked-queue republish want: they are already inside the consumer span
+    /// for the delivery that failed, so their republish belongs under it.
+    /// </param>
     public async Task PublishToAsync(
         string exchange,
         string routingKey,
@@ -50,8 +71,24 @@ public sealed class RabbitMqRawPublisher : IBrokerPublisher
         Guid eventId,
         Guid correlationId,
         IDictionary<string, object?>? headers = null,
+        ActivityContext? parentContext = null,
         CancellationToken cancellationToken = default)
     {
+        // Producer span. Named per the OTel messaging conventions so a Tempo waterfall reads as
+        // "publish X → process X" rather than as two anonymous boxes.
+        using var activity = parentContext is { } parent && parent != default
+            ? ArtificeWorksTelemetry.ActivitySource.StartActivity(
+                $"publish {routingKey}", ActivityKind.Producer, parent)
+            : ArtificeWorksTelemetry.ActivitySource.StartActivity(
+                $"publish {routingKey}", ActivityKind.Producer);
+
+        activity?.SetTag(ArtificeWorksTelemetry.MessagingSystem, ArtificeWorksTelemetry.RabbitMq);
+        activity?.SetTag(ArtificeWorksTelemetry.MessagingOperation, "publish");
+        activity?.SetTag(ArtificeWorksTelemetry.MessagingDestination, exchange.Length == 0 ? "(default)" : exchange);
+        activity?.SetTag(ArtificeWorksTelemetry.MessagingMessageId, eventId.ToString());
+        activity?.SetTag(ArtificeWorksTelemetry.EventTypeAttribute, routingKey);
+        activity?.SetTag(ArtificeWorksTelemetry.CorrelationIdAttribute, correlationId.ToString());
+
         await using var channel = await _connection.CreateChannelAsync(cancellationToken);
 
         var properties = new BasicProperties
@@ -64,10 +101,25 @@ public sealed class RabbitMqRawPublisher : IBrokerPublisher
             Timestamp = new AmqpTimestamp(DateTimeOffset.UtcNow.ToUnixTimeSeconds()),
         };
 
-        if (headers is not null && headers.Count > 0)
-        {
-            properties.Headers = headers;
-        }
+        // Whatever the caller brought (8.2's x-attempt, 8.3's original routing key), plus the
+        // propagation headers. Injected even when no listener is attached and `activity` is null:
+        // Activity.Current may still be a real span from an upstream instrumentation.
+        var outgoing = headers is null
+            ? new Dictionary<string, object?>()
+            : new Dictionary<string, object?>(headers);
+
+        // The correlation id rides as baggage next to traceparent — the decision taken at
+        // grooming. traceparent carries causality; this carries the id a human can read out, and
+        // stamping it here means every publish path gets it without remembering to.
+        var context = activity?.Context ?? Activity.Current?.Context ?? default;
+        var baggage = Baggage.Current.SetBaggage(
+            ArtificeWorksTelemetry.CorrelationBaggageKey, correlationId.ToString());
+
+        Propagators.DefaultTextMapPropagator.Inject(
+            new PropagationContext(context, baggage), outgoing,
+            static (carrier, key, value) => carrier[key] = value);
+
+        properties.Headers = outgoing;
 
         await channel.BasicPublishAsync(
             exchange: exchange,
@@ -77,7 +129,10 @@ public sealed class RabbitMqRawPublisher : IBrokerPublisher
             body: Encoding.UTF8.GetBytes(payload),
             cancellationToken: cancellationToken);
 
-        _logger.LogInformation(
+        // Debug, not Information (9.3): at Information this line fires once per event per hop and
+        // is one of the three things that were drowning the interesting lines. The stage
+        // transitions it accompanies are logged by the workflow services.
+        _logger.LogDebug(
             "Published {EventType} ({EventId}) [correlation {CorrelationId}] to {Exchange}",
             routingKey, eventId, correlationId, exchange.Length == 0 ? "(default exchange)" : exchange);
     }

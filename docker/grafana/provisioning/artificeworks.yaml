@@ -1,0 +1,17 @@
+# Provisions the checked-in dashboard on boot (9.2), so `docker compose up -d` yields a
+# factory-floor view with no clicking. A demo asset, not a nicety — M7 embeds it.
+#
+# grafana/otel-lgtm ships its own dashboard provider for the folder this file sits in; ours is
+# additive and lives in its own folder so an image update cannot silently replace it.
+apiVersion: 1
+
+providers:
+  - name: artificeworks
+    orgId: 1
+    folder: ArtificeWorks
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    options:
+      path: /otel-lgtm/grafana/dashboards
+      foldersFromFilesStructure: false

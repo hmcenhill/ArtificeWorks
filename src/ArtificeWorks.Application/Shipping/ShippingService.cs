@@ -1,6 +1,7 @@
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Messaging;
 using ArtificeWorks.Application.Messaging.Events;
+using ArtificeWorks.Application.Observability;
 using ArtificeWorks.Application.Production;
 using ArtificeWorks.Domain.Models;
 using ArtificeWorks.Domain.Models.Materials;
@@ -41,6 +42,7 @@ public sealed class ShippingService
     private readonly ICarrierBooking _carrier;
     private readonly IEventPublisher _eventPublisher;
     private readonly ShippingConfiguration _config;
+    private readonly ArtificeWorksMetrics _metrics;
     private readonly ILogger<ShippingService> _logger;
 
     public ShippingService(
@@ -49,8 +51,10 @@ public sealed class ShippingService
         ICarrierBooking carrier,
         IEventPublisher eventPublisher,
         ShippingConfiguration config,
+        ArtificeWorksMetrics metrics,
         ILogger<ShippingService> logger)
     {
+        _metrics = metrics;
         _workOrderRepository = workOrderRepository;
         _shipmentRepository = shipmentRepository;
         _carrier = carrier;
@@ -75,6 +79,8 @@ public sealed class ShippingService
         IReadOnlyList<Guid> serialNumbers,
         CancellationToken cancellationToken = default)
     {
+        ArtificeWorksTelemetry.StampWorkOrder(workOrderId);
+
         var workOrder = await _workOrderRepository.GetWithHistory(workOrderId);
         if (workOrder is null)
         {
@@ -202,6 +208,9 @@ public sealed class ShippingService
             return AlreadyBooked(workOrder.Id, shipment: null);
         }
 
+        // After the unique index has spoken, so a losing duplicate counts nothing.
+        _metrics.ShipmentBooked(shipment.Carrier);
+
         _logger.LogInformation(
             "Work order {WorkOrderId} booked with {Carrier}, tracking {TrackingNumber}, {UnitCount} unit(s), ETA {Eta:O}.",
             workOrder.Id, shipment.Carrier, shipment.TrackingNumber, parcel.Count, shipment.EstimatedArrivalUtc);
@@ -220,6 +229,9 @@ public sealed class ShippingService
     {
         var summary = $"Carrier {booking.Carrier} refused the booking: {booking.Reason}";
 
+        _metrics.ShipmentRefused(booking.Carrier ?? "unknown");
+
+        var from = workOrder.CurrentStatus;
         var hold = workOrder.SetHold(author, ProductionService.Truncate(summary));
         if (!hold.Success)
         {
@@ -229,7 +241,8 @@ public sealed class ShippingService
         }
         else
         {
-            _logger.LogInformation("Work order {WorkOrderId} placed OnHold: {Reason}", workOrder.Id, summary);
+            _metrics.Transition(from.ToString(), workOrder.CurrentStatus.ToString());
+            _logger.LogWarning("Work order {WorkOrderId} placed OnHold: {Reason}", workOrder.Id, summary);
         }
 
         await _workOrderRepository.Update(workOrder);
@@ -248,6 +261,8 @@ public sealed class ShippingService
     /// </summary>
     public async Task<DispatchResult> DispatchShipment(Guid workOrderId, CancellationToken cancellationToken = default)
     {
+        ArtificeWorksTelemetry.StampWorkOrder(workOrderId);
+
         var workOrder = await _workOrderRepository.GetWithHistory(workOrderId);
         if (workOrder is null)
         {
@@ -272,6 +287,7 @@ public sealed class ShippingService
         var serials = shipment.Lines.Select(line => line.SerialNumber).ToList();
         var summaryText = $"Shipment dispatched: {shipment.Describe()}.";
 
+        var from = workOrder.CurrentStatus;
         var advance = workOrder.AdvanceToNextStep(Author, ProductionService.Truncate(summaryText));
         if (!advance.Success)
         {
@@ -296,6 +312,9 @@ public sealed class ShippingService
         // all tracked by the same scoped context, so one SaveChanges commits the hand-over, the
         // completion and the event that says so.
         await _shipmentRepository.Update(cancellationToken);
+
+        _metrics.ShipmentDispatched(shipment.Carrier);
+        _metrics.Transition(from.ToString(), workOrder.CurrentStatus.ToString());
 
         _logger.LogInformation(
             "Work order {WorkOrderId} completed: {UnitCount} unit(s) dispatched with {Carrier}, tracking {TrackingNumber}.",

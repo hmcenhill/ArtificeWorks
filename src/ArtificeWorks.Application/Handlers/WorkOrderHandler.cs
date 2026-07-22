@@ -3,6 +3,7 @@ using ArtificeWorks.Application.Data;
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Messaging;
 using ArtificeWorks.Application.Messaging.Events;
+using ArtificeWorks.Application.Observability;
 using ArtificeWorks.Domain.Models;
 using ArtificeWorks.Domain.Models.Materials;
 
@@ -20,6 +21,7 @@ public class WorkOrderHandler
     private readonly IShipmentRepository _shipmentRepository;
     private readonly IWorkOrderTimelineRepository _timelineRepository;
     private readonly IEventPublisher _eventPublisher;
+    private readonly ArtificeWorksMetrics _metrics;
     private readonly ILogger<WorkOrderHandler> _logger;
 
     public WorkOrderHandler(IWorkOrderRepository workOrderRepository,
@@ -27,8 +29,10 @@ public class WorkOrderHandler
         IShipmentRepository shipmentRepository,
         IWorkOrderTimelineRepository timelineRepository,
         IEventPublisher eventPublisher,
+        ArtificeWorksMetrics metrics,
         ILogger<WorkOrderHandler> logger)
     {
+        _metrics = metrics;
         _workOrderRepository = workOrderRepository;
         _productRepository = productRepository;
         _shipmentRepository = shipmentRepository;
@@ -101,6 +105,9 @@ public class WorkOrderHandler
             };
         }
 
+        ArtificeWorksTelemetry.StampWorkOrder(id);
+
+        var from = workOrder.CurrentStatus;
         var result = command(workOrder);
         if (!result.Success)
         {
@@ -120,6 +127,15 @@ public class WorkOrderHandler
         }
 
         await _workOrderRepository.Update(workOrder);
+
+        // Every API-driven transition, counted once, here — the single funnel all four commands
+        // (advance/hold/release/cancel) already go through. The workflow services count the ones
+        // events drive; between them a stage change is counted in exactly one place.
+        _metrics.Transition(from.ToString(), workOrder.CurrentStatus.ToString());
+
+        _logger.LogInformation(
+            "Work order {WorkOrderId} moved {From} → {To}.",
+            workOrder.Id, from, workOrder.CurrentStatus);
 
         return new WorkOrderCommandResponse
         {
@@ -266,6 +282,13 @@ public class WorkOrderHandler
             var savedWorkOrder = await _workOrderRepository.Add(newOrder);
             if (savedWorkOrder is not null)
             {
+                _metrics.WorkOrderCreated();
+                ArtificeWorksTelemetry.StampWorkOrder(newOrder.Id);
+
+                _logger.LogInformation(
+                    "Work order {WorkOrderId} created for {Qty} × {ProductId} by {Requestor}.",
+                    newOrder.Id, newOrder.OrderItemQty, product.ItemId, request.Requestor);
+
                 return new CreateWorkOrderResponse
                 {
                     Outcome = CreateWorkOrderOutcome.Success,

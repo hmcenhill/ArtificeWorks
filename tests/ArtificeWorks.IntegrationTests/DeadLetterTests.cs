@@ -3,12 +3,14 @@ using System.Text.Json;
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Materials;
 using ArtificeWorks.Application.Messaging;
+using ArtificeWorks.Application.Observability;
 using ArtificeWorks.Application.Messaging.Events;
 using ArtificeWorks.Application.Recovery;
 using ArtificeWorks.Domain.Models;
 using ArtificeWorks.Domain.Models.Materials;
 using ArtificeWorks.Infrastructure.Data;
 using ArtificeWorks.Infrastructure.Messaging;
+using ArtificeWorks.Infrastructure.Observability;
 using ArtificeWorks.Infrastructure.Persistence;
 using ArtificeWorks.Infrastructure.Workflow;
 using ArtificeWorks.Workers.Consuming;
@@ -70,6 +72,11 @@ public class DeadLetterTests : IAsyncLifetime
             ["Retry:DelaysMs:2"] = "400",
         });
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
+
+        // Telemetry, registered exactly as the worker host registers it (9.1). No OTLP endpoint is
+        // configured, so nothing leaves the process — but the ActivitySource, the meter and the
+        // metrics recorder every service now depends on are all real.
+        builder.AddArtificeWorksTelemetry(ArtificeWorksTelemetry.WorkerServiceName);
 
         builder.Services.AddDbContext<ArtificeWorksDbContext>(options =>
             options.UseNpgsql(_postgres.GetConnectionString()));

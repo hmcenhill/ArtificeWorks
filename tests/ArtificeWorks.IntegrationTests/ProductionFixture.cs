@@ -2,6 +2,7 @@ using ArtificeWorks.Application.Inspection;
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Materials;
 using ArtificeWorks.Application.Messaging;
+using ArtificeWorks.Application.Observability;
 using ArtificeWorks.Application.Production;
 using ArtificeWorks.Domain.Models.Materials;
 using ArtificeWorks.Infrastructure.Data;
@@ -42,6 +43,12 @@ public class ProductionFixture : IAsyncLifetime
 
         var services = new ServiceCollection();
         services.AddLogging();
+        // The workflow services record metrics since 9.2; the real instruments cost nothing when
+        // nothing is listening, and a test that wants to assert on a count attaches a
+        // MetricCollector to this same meter factory rather than to a stub.
+        services.AddMetrics();
+        services.AddSingleton<PipelineSnapshotCache>();
+        services.AddSingleton<ArtificeWorksMetrics>();
         services.AddDbContext<ArtificeWorksDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()));
         services.AddScoped<IWorkOrderRepository, WorkOrderRepository>();
         services.AddScoped<IProductRepository, ProductRepository>();

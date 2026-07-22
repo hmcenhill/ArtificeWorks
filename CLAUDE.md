@@ -27,6 +27,7 @@ Clean architecture, .NET 10:
 
 - Build: `dotnet build` (from root)
 - Test: `dotnet test` (unit only: `dotnet test tests/ArtificeWorks.UnitTests`)
-- Infra: `docker compose up -d` (Postgres 5432, RabbitMQ 5672/15672, Redis 6379)
+- Infra: `docker compose up -d` (Postgres 5432, RabbitMQ 5672/15672, Redis 6379, Grafana/OTLP 3000/4317)
+- Observability: [docs/observability.md](docs/observability.md) — the runbook. Read it before adding a log line, metric or span.
 - EF migration commands: see [Notes.md](Notes.md)
 - CI: GitHub Actions on push/PR to main (build + tests)

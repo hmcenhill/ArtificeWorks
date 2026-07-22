@@ -49,7 +49,35 @@ services:
       timeout: 5s
       retries: 5
 
+  # Epic 9. Collector, Tempo, Loki, Prometheus and Grafana in ONE image behind one OTLP
+  # endpoint. Three separate containers (Prometheus + Grafana + Jaeger) is the more conventional
+  # split but is three configs to maintain and to self-host in M7; the Aspire dashboard is the
+  # nicer UI but keeps nothing between restarts, and 9.2's metrics want retention.
+  #
+  # Nothing in the system depends on this container being up: an unreachable collector is a
+  # startup warning, never a failure to boot. Stop it and the factory keeps running.
+  otel-lgtm:
+    image: grafana/otel-lgtm:latest
+    container_name: artificeworks-otel-lgtm
+    restart: unless-stopped
+    environment:
+      # Give Grafana its own home so the anonymous-viewer settings below stick to the volume.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    ports:
+      - "3000:3000"   # Grafana — the thing you actually open
+      - "4317:4317"   # OTLP/gRPC — what both hosts export to by default
+      - "4318:4318"   # OTLP/HTTP
+    volumes:
+      - otel_lgtm_data:/data
+      # Checked-in dashboard, provisioned on boot (9.2): `docker compose up -d` yields a
+      # factory-floor view with no clicking. A demo asset, not a nicety — M7 embeds it.
+      - ./docker/grafana/provisioning:/otel-lgtm/grafana/conf/provisioning/dashboards:ro
+      - ./docker/grafana/dashboards:/otel-lgtm/grafana/dashboards:ro
+
 volumes:
   postgres_data:
   rabbitmq_data:
   redis_data:
+  otel_lgtm_data:

@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace ArtificeWorks.Infrastructure.Messaging;
 
 /// <summary>
@@ -12,11 +14,17 @@ namespace ArtificeWorks.Infrastructure.Messaging;
 public interface IBrokerPublisher
 {
     /// <param name="headers">Optional AMQP headers — 8.2's retry ladder carries its attempt count here.</param>
+    /// <param name="parentContext">
+    /// The trace to publish under (9.1). The dispatcher restores it from the outbox row, because it
+    /// runs on a background thread with no ambient activity — without it every trace in the system
+    /// would end at the commit that staged the row. Null falls back to <c>Activity.Current</c>.
+    /// </param>
     Task PublishRawAsync(
         string routingKey,
         string payload,
         Guid eventId,
         Guid correlationId,
         IDictionary<string, object?>? headers = null,
+        ActivityContext? parentContext = null,
         CancellationToken cancellationToken = default);
 }

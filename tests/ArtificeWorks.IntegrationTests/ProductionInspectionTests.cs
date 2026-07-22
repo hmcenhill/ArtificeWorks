@@ -1,12 +1,16 @@
+using System.Diagnostics.Metrics;
+
 using ArtificeWorks.Application.Inspection;
 using ArtificeWorks.Application.Materials;
 using ArtificeWorks.Application.Messaging.Events;
+using ArtificeWorks.Application.Observability;
 using ArtificeWorks.Application.Production;
 using ArtificeWorks.Domain.Models;
 using ArtificeWorks.Domain.Models.Materials;
 
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 
 namespace ArtificeWorks.IntegrationTests;
 
@@ -321,6 +325,53 @@ public class ProductionInspectionTests : IClassFixture<ProductionFixture>
         Assert.Equal(UnitStatus.Passed,
             (await Units(scenario.WorkOrderId)).Single(unit => unit.SerialNumber == serial).Status);
     }
+
+    // ------------------------------------------------------------------ 9.2 the instruments
+
+    /// <summary>
+    /// The check that catches double-counting: one order driven through the pipeline moves each
+    /// transition counter by <em>exactly</em> one.
+    /// <para>
+    /// This is the failure mode worth guarding, because "count it where it happens" is easy to
+    /// satisfy twice — once in the service that commits the transition and once in the handler
+    /// that called it — and a throughput graph that is quietly double every real number is worse
+    /// than no graph.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Driving_an_order_end_to_end_moves_each_transition_counter_exactly_once()
+    {
+        var meterFactory = _fixture.Services.GetRequiredService<IMeterFactory>();
+
+        using var transitions = new MetricCollector<long>(
+            meterFactory, ArtificeWorksMetrics.MeterName, "artificeworks.work_orders.transitions");
+        using var unitsBuilt = new MetricCollector<long>(
+            meterFactory, ArtificeWorksMetrics.MeterName, "artificeworks.units.built");
+        using var unitsPassed = new MetricCollector<long>(
+            meterFactory, ArtificeWorksMetrics.MeterName, "artificeworks.units.passed");
+
+        var scenario = await Seed("METRICS", orderQty: 2);
+
+        await Pick(scenario.WorkOrderId);
+        await Produce(scenario.WorkOrderId, attempt: 1);
+        await Inspect(scenario.WorkOrderId, attempt: 1);
+
+        // Scheduled → InProcess (production) and InProcess → Inspection → Delivery (inspection).
+        // Picking transitions nothing on the happy path, which is why it contributes none.
+        Assert.Equal(1, CountOf(transitions, "Scheduled", "InProcess"));
+        Assert.Equal(1, CountOf(transitions, "InProcess", "Inspection"));
+        Assert.Equal(1, CountOf(transitions, "Inspection", "Delivery"));
+
+        Assert.Equal(2, unitsBuilt.GetMeasurementSnapshot().Sum(m => m.Value));
+        Assert.Equal(2, unitsPassed.GetMeasurementSnapshot().Sum(m => m.Value));
+    }
+
+    private static long CountOf(MetricCollector<long> collector, string from, string to) =>
+        collector.GetMeasurementSnapshot()
+            .Where(measurement =>
+                measurement.Tags.TryGetValue("from", out var f) && (string?)f == from &&
+                measurement.Tags.TryGetValue("to", out var t) && (string?)t == to)
+            .Sum(measurement => measurement.Value);
 
     // ------------------------------------------------------------------------- helpers
 

@@ -6,6 +6,13 @@ single correlation id threads one work order's story through both services' logs
 This document is the source of truth for the broker layout. You should be able to draw the
 exchanges, queues, and bindings from it without reading code.
 
+> **Watching it, rather than drawing it**, belongs to [observability.md](observability.md): traces,
+> metrics, logs, the health probes, and "what happened to work order X?" worked end to end. This
+> document still owns the correlation id's *contract* — where it comes from and how it crosses the
+> wire — and that one owns what you do with it. One thing worth knowing here: since 9.1 the
+> outbox row also carries a W3C `traceparent`, captured when the event is staged and restored when
+> it is published, so a trace does not end at every commit.
+
 ## At a glance
 
 ```mermaid

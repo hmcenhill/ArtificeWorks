@@ -54,10 +54,10 @@ dashboard a plain JSON mirror rather than making a React app speak PromQL.
 
 ## Acceptance Criteria
 
-- [ ] Correlation IDs are logged consistently across services
-- [ ] Metrics expose throughput/failure/retry counts per pipeline stage
-- [ ] One work order can be traced through multiple stages
-- [ ] Local setup for viewing logs/metrics/traces is documented
+- [x] Correlation IDs are logged consistently across services
+- [x] Metrics expose throughput/failure/retry counts per pipeline stage
+- [x] One work order can be traced through multiple stages
+- [x] Local setup for viewing logs/metrics/traces is documented
 
 ## Stories
 
