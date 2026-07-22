@@ -39,7 +39,9 @@
       "PowerShell(git -C \"c:/Users/hmcen/source/repos/ArtificeWorks\" diff --stat -- \"docs/Plan/EPIC 7 - Shipping and delivery workflow\")",
       "PowerShell(git -C \"c:/Users/hmcen/source/repos/ArtificeWorks\" diff -- \"docs/Plan/EPIC 7 - Shipping and delivery workflow/7.4.md\")",
       "PowerShell(git -C \"c:/Users/hmcen/source/repos/ArtificeWorks\" checkout -- \"docs/Plan/EPIC 7 - Shipping and delivery workflow\")",
-      "PowerShell(git -C \"c:/Users/hmcen/source/repos/ArtificeWorks\" status --porcelain -- \"docs/Plan\")"
+      "PowerShell(git -C \"c:/Users/hmcen/source/repos/ArtificeWorks\" status --porcelain -- \"docs/Plan\")",
+      "Bash(cd \"c:/Users/hmcen/source/repos/ArtificeWorks\" && dotnet test 2>&1 > /tmp/tr.txt; grep -B2 -A 16 \"FAIL\\\\]\" /tmp/tr.txt | head -40)",
+      "Bash(tee /tmp/tr.txt)"
     ]
   }
 }

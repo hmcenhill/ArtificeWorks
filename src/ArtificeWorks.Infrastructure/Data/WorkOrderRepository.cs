@@ -4,10 +4,14 @@ using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Domain.Models;
 using ArtificeWorks.Infrastructure.Persistence;
 
+using Npgsql;
+
 namespace ArtificeWorks.Infrastructure.Data;
 
 public class WorkOrderRepository : IWorkOrderRepository
 {
+    private const string UniqueViolation = "23505";
+
     private readonly ArtificeWorksDbContext _context;
 
     public WorkOrderRepository(ArtificeWorksDbContext context)
@@ -37,7 +41,20 @@ public class WorkOrderRepository : IWorkOrderRepository
     public async Task<WorkOrder> Add(WorkOrder workOrder)
     {
         var createdWorkOrder = await _context.WorkOrders.AddAsync(workOrder);
-        await _context.SaveChangesAsync();
+
+        try
+        {
+            // This SaveChanges is doing more than it looks since 8.1: it also flushes the outbox
+            // row the handler staged, and (when the request carried one) 8.4's idempotency key.
+            // Work, announcement and marker commit atomically or not at all.
+            await _context.SaveChangesAsync();
+        }
+        catch (DbUpdateException e) when (e.InnerException is PostgresException { SqlState: UniqueViolation })
+        {
+            throw new DuplicateKeyException(
+                "A unique constraint rejected this write; the caller is expected to resolve it.", e);
+        }
+
         return createdWorkOrder.Entity;
     }
 

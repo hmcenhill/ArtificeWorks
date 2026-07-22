@@ -29,16 +29,21 @@ public sealed class EventDispatcher
     public IReadOnlyCollection<string> HandledEventTypes => (IReadOnlyCollection<string>)_registrations.Keys;
 
     /// <summary>
-    /// Deserializes and dispatches one message. Throws if the handler throws, so the
-    /// consumer can decide the ack/nack outcome. An unrecognised event type is logged and
-    /// treated as a no-op (the queue only binds handled keys, so this is defensive).
+    /// Deserializes and dispatches one message. Throws if the handler throws, so the consumer can
+    /// classify the failure and decide where the message goes.
+    /// <para>
+    /// An unrecognised event type is <strong>poison</strong>, not a no-op (8.2). The queue only
+    /// binds handled keys, so a delivery for an unknown one means the topology and the handler
+    /// set have drifted apart — silently acking that away is how a message disappears without
+    /// anyone finding out. It parks instead, where a human can see it.
+    /// </para>
     /// </summary>
     public async Task DispatchAsync(string eventType, ReadOnlyMemory<byte> body, CancellationToken cancellationToken)
     {
         if (!_registrations.TryGetValue(eventType, out var registration))
         {
-            _logger.LogWarning("No handler registered for event type {EventType}; message ignored.", eventType);
-            return;
+            _logger.LogWarning("No handler registered for event type {EventType}; parking the message.", eventType);
+            throw new PoisonMessageException($"No handler is registered for event type '{eventType}'.");
         }
 
         await using var scope = _scopeFactory.CreateAsyncScope();

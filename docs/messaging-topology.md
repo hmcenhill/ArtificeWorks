@@ -11,14 +11,18 @@ exchanges, queues, and bindings from it without reading code.
 ```mermaid
 flowchart LR
     api["ArtificeWorks.Api<br/>(publisher)"]
+    ob[("outbox_messages<br/>written in the work's<br/>own transaction")]
+    disp["outbox dispatcher<br/>(~1s poll, both hosts)"]
     ex{{"exchange<br/><b>artifice.events</b><br/>type: direct, durable"}}
     q[["queue<br/><b>artifice.workers</b><br/>durable"]]
     worker["ArtificeWorks.Workers<br/>(consumer + publisher)"]
 
-    api -- "publish<br/>routing key = event type" --> ex
+    api -- "stage event" --> ob
+    ob --> disp
+    disp -- "publish<br/>routing key = event type" --> ex
     ex -- "bindings: scheduled,<br/>materials-reserved,<br/>production-completed,<br/>rework-required,<br/>inspection-passed,<br/>shipment-scheduled" --> q
     q -- "deliver (prefetch 1, manual ack)" --> worker
-    worker -- "publish next stage's event<br/>(same correlation id)" --> ex
+    worker -- "stage next stage's event<br/>(same correlation id)" --> ob
 ```
 
 The worker is **both** a consumer and a publisher, and since Epic 6 it is the only thing
@@ -29,6 +33,14 @@ rework loop is a genuine cycle over the transport, not a method call in a handle
 
 Since Epic 7 the pipeline runs to its end: **one `POST /work-orders/{id}/advance` carries an
 order all the way to Completed**, with a parcel and a tracking number at the far side.
+
+**Since Epic 8 nothing gets there by luck.** Nobody publishes directly any more: every publisher
+writes an outbox row in the same transaction as the work, a background dispatcher puts those rows
+on the wire, a failed handling climbs a retry ladder rather than being dropped, and whatever
+genuinely cannot be handled ends up as a row a human can read and replay. The three sections
+below — [The outbox](#the-outbox-send-side), [Retry, poison and the parked
+queue](#retry-poison-and-the-parked-queue) and [Dead letters](#dead-letters-and-replay) — are the
+whole of that claim.
 
 ## The pipeline
 
@@ -102,9 +114,13 @@ so whichever service starts first declares it; the declaration is idempotent.
 
 ## Queues and bindings
 
-| Queue | Durable | Bound routing keys | Consumer |
+| Queue | Durable | Bound to | Consumer |
 | --- | --- | --- | --- |
-| `artifice.workers` | yes | one per handled event type — `work-order.scheduled`, `work-order.materials-reserved`, `work-order.production-completed`, `work-order.rework-required`, `work-order.inspection-passed`, `work-order.shipment-scheduled` | `ArtificeWorks.Workers` |
+| `artifice.workers` | yes | `artifice.events`, one binding per handled event type — `work-order.scheduled`, `work-order.materials-reserved`, `work-order.production-completed`, `work-order.rework-required`, `work-order.inspection-passed`, `work-order.shipment-scheduled` | `ArtificeWorks.Workers` |
+| `artifice.retry.5s.queue` | yes | `artifice.retry.5s` (fanout) | *(none — TTL 5s, then dead-letters to `artifice.events`)* |
+| `artifice.retry.30s.queue` | yes | `artifice.retry.30s` (fanout) | *(none — TTL 30s)* |
+| `artifice.retry.2m.queue` | yes | `artifice.retry.2m` (fanout) | *(none — TTL 2m)* |
+| `artifice.parked` | yes | *(default exchange, by name)* | `ParkedQueueDrain` — writes `dead_letters` rows and nothing else |
 
 ### The full event set
 
@@ -133,15 +149,18 @@ worker's handler set are always the same list.
 ### Delivery and acknowledgement
 
 - **Prefetch 1** — the worker holds at most one unacknowledged message at a time. Simple and
-  fair for the current single-consumer slice.
-- **Manual acks** — a message is acked only after its handler succeeds.
-- **Nack without requeue on failure** — if a handler throws, the message is nacked with
-  `requeue: false` and dropped. There is no dead-letter queue yet, so requeuing a poison
-  message would loop forever. Epic 8 (reliability) adds a DLQ and revisits this policy.
+  fair for the current single-consumer slice, and the reason a retry can never be an in-process
+  sleep: a sleeping handler holds the un-acked message and stalls everything behind it.
+- **Manual acks** — a message is acked only after its handler succeeds, *or* after the loop has
+  successfully handed it to the retry ladder or the parked queue.
+- **Nothing is dropped.** Epic 4's `nack(requeue: false)` was a deliberate first-slice policy that
+  threw failed messages away; 8.2 replaced it with the three-way classification below. The only
+  nack left in the loop is `requeue: true`, used when the broker itself will not take the message
+  we are trying to move — the one case where holding it beats dropping it.
 
 ### What counts as a failure
 
-Only genuine faults nack. **Business outcomes ack**, because they were handled:
+Only genuine faults leave the happy path. **Business outcomes ack**, because they were handled:
 
 | Stage | Outcome | Message |
 | --- | --- | --- |
@@ -162,17 +181,149 @@ Only genuine faults nack. **Business outcomes ack**, because they were handled:
 | shipping | Duplicate delivery → order already booked | **ack** |
 | dispatch | Parcel handed over, order Completed | ack |
 | dispatch | Duplicate delivery → shipment already dispatched | **ack** |
-| any | Unexpected exception (broker/database fault, bug) | nack, `requeue: false` |
+| any | Unexpected exception (broker/database fault, bug, concurrency conflict) | **retry ladder**, then park |
+| any | Body won't deserialize, or no handler for the routing key | **park immediately** |
 
-Keeping that line sharp is what stops normal business flow from polluting Epic 8's retry and
+Keeping that line sharp is what stopped normal business flow from polluting the retry and
 dead-letter design. Note especially that scrap and Fault ack: they are the pipeline working
-as designed, and nacking them would put ordinary manufacturing failures into the poison-message
-path.
+as designed, and retrying them would put ordinary manufacturing failures into the recovery path.
+
+## Retry, poison and the parked queue
+
+```mermaid
+flowchart LR
+    q[["artifice.workers"]] -->|"handler throws"| cls{"classify"}
+    cls -->|"transient<br/>attempt 1"| r1[["retry.5s"]]
+    cls -->|"transient<br/>attempt 2"| r2[["retry.30s"]]
+    cls -->|"transient<br/>attempt 3"| r3[["retry.2m"]]
+    cls -->|"poison, or<br/>attempt 4"| park[["artifice.parked"]]
+    r1 & r2 & r3 -->|"TTL expires →<br/>dead-letters with the<br/>ORIGINAL routing key"| ex{{"artifice.events"}}
+    ex --> q
+    park --> drain["ParkedQueueDrain"]
+    drain --> dl[("dead_letters")]
+```
+
+**Three rungs, three retries, four deliveries in all.** The original delivery, then 5s, 30s and 2m
+later. A fourth failure parks and stops.
+
+**Why one fanout exchange per rung, rather than one direct `artifice.retry`.** A delay queue
+dead-letters on expiry using the message's *own* routing key, and that key has to still be the
+original event type or the message comes back unroutable. A single direct retry exchange would
+have to consume the routing key to select the rung — but the routing key is already spoken for. So
+the rung is chosen by *exchange* and the routing key rides through untouched, which is what lets a
+retried message re-enter the pipeline with **no special-case code in the consumer at all**.
+
+**Why the broker holds the delay and not the handler.** With prefetch 1, sleeping inside a handler
+holds the un-acked message and stalls the whole pipeline for the length of the backoff — and a
+worker restart loses the retry outright. TTL'd queues survive restarts, cost nothing while
+waiting, and are visible in the management UI, which is where Epic 12 will be pointing.
+
+**Why fixed TTLs and not computed per-message ones.** Per-message TTL on a shared queue does not
+expire out of order: RabbitMQ only ever checks the message at the head, so one long-delayed
+message blocks every shorter one behind it. Fixed-TTL queues sidestep the trap entirely.
+
+The attempt count travels in an `x-attempt` header we control, not in RabbitMQ's `x-death` table —
+a message crossing three different delay queues accumulates three separate `x-death` entries, and
+"add up the counts of the queues I happen to know about" is a worse contract than one integer.
+`x-original-routing-key` and `x-death-reason` ride along too, so a parked message can be replayed
+without archaeology.
+
+**A poison message cannot wedge the queue.** Every branch acks the delivery it was given. With
+prefetch 1, a message that threw and requeued would be redelivered forever and nothing behind it
+would ever move — so a body that won't parse parks on first sight, and the next message is handled
+normally. That is asserted, not assumed.
+
+**An unknown routing key is poison, not a no-op.** The queue only binds handled keys, so a
+delivery for an unknown one means the topology and the handler set have drifted apart. Acking that
+away silently is how a message disappears without anyone finding out; it parks instead.
+
+## Dead letters and replay
+
+`artifice.parked` has no TTL and exactly one consumer: `ParkedQueueDrain`, which writes each
+message into `dead_letters` and acks. It is deliberately a **different consumer from the main
+loop** — the pipeline's handlers must never run for a message that is parked *because* running
+them failed.
+
+**A table, not a queue browser.** Browsing AMQP from a request handler is awkward, semi-destructive
+and gives up the moment someone purges the queue. A row is an ordinary query, joins to the work
+order, survives a broker restart, and is what Epic 11 can render without putting AMQP in a browser.
+
+| Endpoint | Does |
+| --- | --- |
+| `GET /system/dead-letters` | paged, newest first, filterable by `workOrderId` and `replayed` |
+| `GET /system/dead-letters/{id}` | the full record, payload included |
+| `POST /system/dead-letters/{id}/replay` | republishes under the original routing key, **via the outbox** |
+
+Three properties worth stating:
+
+- **The drain is the most defensive code in the system.** Every message it sees is already known to
+  be broken. A body that won't parse still gets a row — payload as text, work order id null, the
+  parse failure recorded — because a drain that throws on a poison message re-creates the exact
+  wedge 8.2 just fixed, one queue further along. The only thing it refuses to swallow is a
+  *database* failure, and even then it requeues rather than acking.
+- **Replay goes through the outbox**, because the one endpoint whose entire job is "reliably
+  re-send this" would be an odd place to publish unreliably. The stamp that says it was replayed
+  and the outbox row carrying it commit together.
+- **Replay resets the ladder.** A replayed message carries no attempt header, so it starts at
+  attempt 1 with all three rungs ahead of it: a human's retry is a fresh decision, not a
+  continuation of the automated one that gave up. A *second* replay needs `?force=true` — not
+  because it is dangerous (the dedupe keys make it a skip) but because a second click is usually
+  asking "did the first one work?", and that deserves an answer rather than another silent
+  re-send.
+
+## The outbox (send side)
+
+Until Epic 8, publishing was **best-effort, at-most-once**: the work committed, then the event went
+out, and a broker hiccup between the two was swallowed and logged. By Epic 7 that gap spanned six
+stages, so one dropped event stranded an order mid-pipeline forever with no retry and no signal.
+**The demo's worst failure mode was silence.**
+
+Since 8.1, no application code touches the broker. `IEventPublisher` resolves to
+`OutboxEventPublisher`, which `Add`s an `outbox_messages` row to the caller's own `DbContext` and
+returns without saving. The row is left tracked so it is flushed by whatever `SaveChanges` commits
+the work it describes — **the same unit of work, the same transaction**. The rule for any new
+publish site is therefore one line long: *stage the event before the save, never after it.*
+
+| Column | Why it exists |
+| --- | --- |
+| `Id` (bigint identity) | The publication order. The only store-generated key in the schema. |
+| `EventType` | The routing key. |
+| `Payload` | The whole serialized `EventEnvelope<T>`, published verbatim. |
+| `CorrelationId` | Captured **at write time** — see below. |
+| `SentUtc`, `Attempts`, `LastError`, `NextAttemptUtc` | The dispatcher's bookkeeping. |
+
+**The envelope is serialized where the work happened, correlation id included.** The dispatcher is
+a background loop with no request and no delivery behind it; if it stamped a correlation id it
+would be inventing one, and 4.3's thread would end at the outbox.
+
+**The dispatcher claims with `FOR UPDATE SKIP LOCKED`**, in id order, in batches. Two dispatchers
+can therefore never hold the same row — the API runs one and the worker runs one, because the API
+is where the pipeline *starts* and a dropped `work-order.scheduled` strands an order before it has
+moved at all. A stuck row cannot block the ones behind it, either.
+
+**A broker outage delays events; it never loses them.** A failed publish increments `Attempts`,
+records `LastError`, backs the row off and leaves it unsent. The backlog drains when the broker
+returns. That is the resilience the old swallow-and-log was protecting, kept — minus the part where
+the message disappeared.
+
+**Rows are marked sent, not deleted.** A sent row is evidence for a while (Epic 11 wants it, and
+7.4's timeline was shaped to merge an `event` kind later); a background sweep ages them out.
+
+### The outbox converts loss into duplication
+
+It does **not** make delivery exactly-once. The dispatcher can die between `BasicPublish` and the
+`SaveChanges` that marks the row sent, so a row can publish twice. **Publishing is now
+at-least-once, deliberately.**
+
+That is the right trade only because duplication was already solved. Epics 5–7 built a dedupe key
+at every stage, each of them a constraint that commits with its work — and this is the epic where
+that groundwork gets spent. A retry, a redelivery and a replay are the *same situation* from a
+handler's point of view, and all three are answered by keys that already existed.
 
 ### Idempotent consumption
 
-At-most-once *publish* still meets at-least-once *delivery*: redeliveries happen on consumer
-restarts and network hiccups, long before Epic 8 formalises reliability.
+At-least-once *publish* now meets at-least-once *delivery*: redeliveries happen on consumer
+restarts, on network hiccups, on every rung of the retry ladder, and on every replay.
 
 **Picking (Epic 5)** got its dedupe almost for free. Picking happens exactly once per work
 order, so a **unique index on `material_reservations.work_order_id`** answers "has this been
@@ -193,6 +344,12 @@ What must happen exactly once is an **attempt**. So the key is attempt-scoped:
 | `production_runs` | `(work_order_id, attempt_number)` | one build per attempt |
 | `inspection_runs` | `(work_order_id, attempt_number)` | one inspection per attempt |
 | `shipments` | `work_order_id` | one parcel per order |
+| `idempotency_keys` | `key` | one work order per client request (8.4) |
+
+**One rule, five keys.** *The key follows the thing that must happen once.* 5.4 said the order,
+6.4 said the attempt, 7.1 said the order again, and 8.4 says the client's request. That is the
+reliability argument this system is making, and it is why at-least-once publishing is safe here
+and would not be somewhere else.
 
 **Epic 7 goes back to an order-scoped key, and that is not a regression.** The rule 6.4 actually
 established is that the key must follow *the thing that must happen once*. For production that
@@ -284,9 +441,26 @@ flowchart LR
    `work-order.completed` — round every revolution of the rework loop, and one `grep` still
    returns all of it.
 
+## Configuration
+
+| Section | Key | Default | Effect |
+| --- | --- | --- | --- |
+| `Outbox` | `PollIntervalMs` | `1000` | How often the dispatcher looks for unsent rows |
+| `Outbox` | `BatchSize` | `50` | Rows claimed per pass |
+| `Outbox` | `SentRetentionHours` | `72` | How long a sent row is kept as evidence |
+| `Retry` | `DelaysMs` | `[5000, 30000, 120000]` | The ladder. One rung per delay; the number of rungs *is* the retry cap |
+
+`Retry:DelaysMs` **replaces** the ladder rather than extending it — the configuration binder binds
+array entries into whatever array is already there, so `RetryConfiguration.DelaysMs` starts empty
+and the shipped default lives behind it. A non-empty default would have made configuring three
+rungs quietly produce six.
+
 ## Related code
 
 - Exchange + connection: [`RabbitMqConnection`](../src/ArtificeWorks.Infrastructure/Messaging/RabbitMqConnection.cs), [`RabbitMqConfiguration`](../src/ArtificeWorks.Infrastructure/Messaging/RabbitMqConfiguration.cs)
-- Publisher: [`RabbitMqEventPublisher`](../src/ArtificeWorks.Infrastructure/Messaging/RabbitMqEventPublisher.cs)
-- Consumer + queue/bindings: [`RabbitMqConsumerService`](../src/ArtificeWorks.Workers/Consuming/RabbitMqConsumerService.cs), [`EventDispatcher`](../src/ArtificeWorks.Workers/Consuming/EventDispatcher.cs)
+- Outbox: [`OutboxMessage`](../src/ArtificeWorks.Infrastructure/Messaging/Outbox/OutboxMessage.cs), [`OutboxEventPublisher`](../src/ArtificeWorks.Infrastructure/Messaging/Outbox/OutboxEventPublisher.cs), [`OutboxDispatcher`](../src/ArtificeWorks.Infrastructure/Messaging/Outbox/OutboxDispatcher.cs)
+- The wire: [`RabbitMqRawPublisher`](../src/ArtificeWorks.Infrastructure/Messaging/RabbitMqRawPublisher.cs), [`RabbitMqEventPublisher`](../src/ArtificeWorks.Infrastructure/Messaging/RabbitMqEventPublisher.cs)
+- Consumer, retry ladder + queue/bindings: [`RabbitMqConsumerService`](../src/ArtificeWorks.Workers/Consuming/RabbitMqConsumerService.cs), [`RetryConfiguration`](../src/ArtificeWorks.Infrastructure/Messaging/RetryConfiguration.cs), [`EventDispatcher`](../src/ArtificeWorks.Workers/Consuming/EventDispatcher.cs)
+- Dead letters: [`ParkedQueueDrain`](../src/ArtificeWorks.Workers/Consuming/ParkedQueueDrain.cs), [`DeadLetterService`](../src/ArtificeWorks.Application/Recovery/DeadLetterService.cs), [`DeadLetterController`](../src/ArtificeWorks.Api/Controllers/DeadLetterController.cs)
+- API idempotency: [`IdempotencyFilter`](../src/ArtificeWorks.Api/Middleware/IdempotencyFilter.cs)
 - Correlation: [`CorrelationMiddleware`](../src/ArtificeWorks.Api/Middleware/CorrelationMiddleware.cs), [`CorrelationContext`](../src/ArtificeWorks.Application/Messaging/CorrelationContext.cs), [`CorrelationLog`](../src/ArtificeWorks.Application/Messaging/CorrelationLog.cs)

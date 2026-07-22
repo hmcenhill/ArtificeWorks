@@ -186,12 +186,9 @@ public sealed class ShippingService
         // writes its note separately; here it is free, so it is taken.)
         workOrder.AppendNote(author, ProductionService.Truncate(summary));
 
-        if (!await _shipmentRepository.TryBook(shipment, cancellationToken))
-        {
-            return AlreadyBooked(workOrder.Id, shipment: null);
-        }
-
-        await PublishSafely(new ShipmentScheduled(
+        // Staged before the commit (8.1), so the parcel, its history note and the hand-off to
+        // dispatch are one write. A losing duplicate takes its announcement down with it.
+        await _eventPublisher.PublishAsync(new ShipmentScheduled(
             workOrder.Id,
             workOrder.OrderedItem.ItemId,
             shipment.Carrier,
@@ -199,6 +196,11 @@ public sealed class ShippingService
             parcel,
             shipment.EstimatedArrivalUtc,
             shipment.BookedUtc), cancellationToken);
+
+        if (!await _shipmentRepository.TryBook(shipment, cancellationToken))
+        {
+            return AlreadyBooked(workOrder.Id, shipment: null);
+        }
 
         _logger.LogInformation(
             "Work order {WorkOrderId} booked with {Carrier}, tracking {TrackingNumber}, {UnitCount} unit(s), ETA {Eta:O}.",
@@ -282,17 +284,18 @@ public sealed class ShippingService
                 shipment.Carrier, shipment.TrackingNumber);
         }
 
-        // The shipment's status change and the order's transition are both tracked by the same
-        // scoped context, so one SaveChanges commits the hand-over and the completion together.
-        await _shipmentRepository.Update(cancellationToken);
-
-        await PublishSafely(new WorkOrderCompleted(
+        await _eventPublisher.PublishAsync(new WorkOrderCompleted(
             workOrder.Id,
             workOrder.OrderedItem.ItemId,
             shipment.Carrier,
             shipment.TrackingNumber,
             serials,
             shipment.DispatchedUtc!.Value), cancellationToken);
+
+        // The shipment's status change, the order's transition and the terminal announcement are
+        // all tracked by the same scoped context, so one SaveChanges commits the hand-over, the
+        // completion and the event that says so.
+        await _shipmentRepository.Update(cancellationToken);
 
         _logger.LogInformation(
             "Work order {WorkOrderId} completed: {UnitCount} unit(s) dispatched with {Carrier}, tracking {TrackingNumber}.",
@@ -330,20 +333,5 @@ public sealed class ShippingService
         _logger.LogInformation(
             "Duplicate dispatch skipped (idempotent) for work order {WorkOrderId}: {Error}", workOrderId, error);
         return new DispatchResult(DispatchOutcome.AlreadyDispatched, error, shipment.Carrier, shipment.TrackingNumber);
-    }
-
-    /// <summary>Best-effort publish; see <see cref="ProductionService"/> for the reasoning.</summary>
-    private async Task PublishSafely<T>(T @event, CancellationToken cancellationToken) where T : IntegrationEvent
-    {
-        try
-        {
-            await _eventPublisher.PublishAsync(@event, cancellationToken);
-        }
-        catch (Exception e)
-        {
-            _logger.LogError(e,
-                "Failed to publish {EventType}; the shipment is committed but the event was dropped.",
-                @event.EventType);
-        }
     }
 }

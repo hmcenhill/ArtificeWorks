@@ -24,8 +24,17 @@ public interface IMaterialReservationRepository
     /// <see cref="ReservationOutcome.AlreadyReserved"/> and draws nothing.
     /// </para>
     /// </summary>
+    /// <param name="stageWithReservation">
+    /// Ran <em>inside</em> the reservation transaction, after the draw succeeds and before the
+    /// commit, so anything it stages on the same unit of work commits with the pick. 8.1 added it
+    /// for the outbox row: the announcement of a pick must not be able to exist without the pick,
+    /// nor the pick without the announcement. It also closes 5.2's smaller caveat — the
+    /// state-history note is now inside the transaction rather than a second save behind it.
+    /// Not called on the short or duplicate paths, because on those nothing happened to announce.
+    /// </param>
     Task<ReservationCommitResult> TryReserve(
         Guid workOrderId,
         IReadOnlyList<ComponentDemand> demand,
+        Func<MaterialReservation, Task>? stageWithReservation = null,
         CancellationToken cancellationToken = default);
 }

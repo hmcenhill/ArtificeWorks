@@ -1,6 +1,7 @@
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Materials;
 using ArtificeWorks.Domain.Models.Materials;
+using ArtificeWorks.Infrastructure.Messaging.Outbox;
 using ArtificeWorks.Infrastructure.Persistence;
 
 using Microsoft.EntityFrameworkCore;
@@ -60,6 +61,7 @@ public class MaterialReservationRepository : IMaterialReservationRepository
     public async Task<ReservationCommitResult> TryReserve(
         Guid workOrderId,
         IReadOnlyList<ComponentDemand> demand,
+        Func<MaterialReservation, Task>? stageWithReservation = null,
         CancellationToken cancellationToken = default)
     {
         if (demand.Count == 0)
@@ -95,6 +97,14 @@ public class MaterialReservationRepository : IMaterialReservationRepository
         var reservation = new MaterialReservation(workOrderId, demand);
         _context.MaterialReservations.Add(reservation);
 
+        // The draw has succeeded; let the caller stage whatever else belongs to this pick — since
+        // 8.1 that is the state-history note and the MaterialsReserved outbox row — so the single
+        // SaveChanges below writes all of it inside this transaction.
+        if (stageWithReservation is not null)
+        {
+            await stageWithReservation(reservation);
+        }
+
         try
         {
             await _context.SaveChangesAsync(cancellationToken);
@@ -103,7 +113,8 @@ public class MaterialReservationRepository : IMaterialReservationRepository
         catch (DbUpdateException e) when (IsDuplicateReservation(e))
         {
             // Another delivery of the same scheduling event got there first. Rolling back
-            // undoes this attempt's decrements, so the winner's pick stands alone.
+            // undoes this attempt's decrements, so the winner's pick stands alone — and takes the
+            // loser's note and its outbox row with it, so the duplicate announces nothing.
             await transaction.RollbackAsync(cancellationToken);
 
             // The failed insert leaves the reservation graph tracked as Added; detach it so a
@@ -114,6 +125,14 @@ public class MaterialReservationRepository : IMaterialReservationRepository
                 _context.Entry(reservationLine).State = EntityState.Detached;
             }
             _context.Entry(reservation).State = EntityState.Detached;
+
+            // Same for anything the caller staged: it described a pick that did not happen.
+            foreach (var staged in _context.ChangeTracker.Entries<OutboxMessage>()
+                         .Where(entry => entry.State == EntityState.Added)
+                         .ToList())
+            {
+                staged.State = EntityState.Detached;
+            }
 
             return ReservationCommitResult.AlreadyReserved();
         }

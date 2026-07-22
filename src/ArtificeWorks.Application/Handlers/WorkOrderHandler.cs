@@ -64,7 +64,7 @@ public class WorkOrderHandler
     public Task<WorkOrderCommandResponse> AdvanceWorkOrder(Guid id, WorkOrderCommandRequest request)
         => ExecuteCommand(id,
             wo => wo.AdvanceToNextStep(request.CreatedBy, request.Notes),
-            onCommitted: PublishAdvanceEvents);
+            beforeCommit: PublishAdvanceEvents);
 
     public Task<WorkOrderCommandResponse> HoldWorkOrder(Guid id, WorkOrderCommandRequest request)
         => ExecuteCommand(id, wo => wo.SetHold(request.CreatedBy, request.Notes));
@@ -72,16 +72,24 @@ public class WorkOrderHandler
     public Task<WorkOrderCommandResponse> ReleaseWorkOrder(Guid id, WorkOrderCommandRequest request)
         => ExecuteCommand(id,
             wo => wo.ReleaseHold(request.CreatedBy, request.Notes),
-            onCommitted: wo => RerequestShippingIfStranded(wo, request.CreatedBy));
+            beforeCommit: wo => RerequestShippingIfStranded(wo, request.CreatedBy));
 
     public Task<WorkOrderCommandResponse> CancelWorkOrder(Guid id, WorkOrderCommandRequest request)
         => ExecuteCommand(id,
             wo => wo.Cancel(request.CreatedBy, request.Notes),
-            onCommitted: VoidAnyBookedShipment);
+            beforeCommit: VoidAnyBookedShipment);
 
+    /// <param name="beforeCommit">
+    /// Ran between the domain transition and the single <c>SaveChanges</c> that persists it —
+    /// which since 8.1 is <em>where publishing happens</em>. The hook used to be
+    /// <c>onCommitted</c> and published to the broker after the state change had already landed;
+    /// that ordering was the dual-write gap. Now the event is staged as an outbox row and the
+    /// transition and its announcement commit in one transaction, so neither can exist without
+    /// the other.
+    /// </param>
     private async Task<WorkOrderCommandResponse> ExecuteCommand(Guid id,
         Func<WorkOrder, TransitionResult> command,
-        Func<WorkOrder, Task>? onCommitted = null)
+        Func<WorkOrder, Task>? beforeCommit = null)
     {
         var workOrder = await _workOrderRepository.GetWithHistory(id);
         if (workOrder is null)
@@ -104,14 +112,14 @@ public class WorkOrderHandler
             };
         }
 
-        await _workOrderRepository.Update(workOrder);
-
-        // Publish-after-commit: the transition is persisted (source of truth) before any
-        // event goes out. Publishing is best-effort — see PublishSafely.
-        if (onCommitted is not null)
+        // Stage-then-commit: any event this transition raises is written to the outbox in the
+        // same unit of work as the transition itself, and one SaveChanges commits both.
+        if (beforeCommit is not null)
         {
-            await onCommitted(workOrder);
+            await beforeCommit(workOrder);
         }
+
+        await _workOrderRepository.Update(workOrder);
 
         return new WorkOrderCommandResponse
         {
@@ -164,11 +172,11 @@ public class WorkOrderHandler
         }
 
         // Recorded in state history as well as logged, so the recovery reads as something the
-        // system did rather than as magic.
+        // system did rather than as magic. Note and event are both left tracked for the caller's
+        // single SaveChanges — the release, the note and the re-request are one commit.
         workOrder.AppendNote(Author, $"Released into Delivery with no shipment; re-requesting a carrier for {serials.Count} unit(s).");
-        await _workOrderRepository.Update(workOrder);
 
-        await PublishSafely(new InspectionPassed(
+        await _eventPublisher.PublishAsync(new InspectionPassed(
             workOrder.Id,
             workOrder.OrderedItem.ItemId,
             serials,
@@ -201,8 +209,8 @@ public class WorkOrderHandler
             return;
         }
 
-        await _shipmentRepository.Update();
-
+        // No save here since 8.1: the shipment is tracked by the same scoped context as the work
+        // order, so the caller's single SaveChanges voids the parcel and cancels the order together.
         _logger.LogInformation(
             "Work order {WorkOrderId} was cancelled; shipment {TrackingNumber} with {Carrier} voided.",
             workOrder.Id, shipment.TrackingNumber, shipment.Carrier);
@@ -216,7 +224,7 @@ public class WorkOrderHandler
     {
         if (workOrder.CurrentStatus == WorkOrderStatus.Scheduled)
         {
-            return PublishSafely(new WorkOrderScheduled(
+            return _eventPublisher.PublishAsync(new WorkOrderScheduled(
                 workOrder.Id,
                 workOrder.OrderedItem.ItemId,
                 workOrder.OrderedItem.ItemName,
@@ -224,23 +232,6 @@ public class WorkOrderHandler
                 workOrder.UpdatedUtc));
         }
         return Task.CompletedTask;
-    }
-
-    /// <summary>
-    /// Publishes an event without letting a broker outage fail the request whose state
-    /// change already committed. This is an at-most-once gap by design; Epic 8's outbox
-    /// makes delivery reliable.
-    /// </summary>
-    private async Task PublishSafely<T>(T @event) where T : Messaging.IntegrationEvent
-    {
-        try
-        {
-            await _eventPublisher.PublishAsync(@event);
-        }
-        catch (Exception e)
-        {
-            _logger.LogError(e, "Failed to publish {EventType}; state change is committed but the event was dropped.", @event.EventType);
-        }
     }
 
     public async Task<CreateWorkOrderResponse> CreateWorkOrder(CreateWorkOrderRequest request)
@@ -256,19 +247,25 @@ public class WorkOrderHandler
         }
 
         var newOrder = new WorkOrder(request.Requestor, product, request.Qty, request.Notes);
+
+        // The aggregate makes its own id in the constructor, so the announcement can be staged
+        // before the order is saved — which is the point. The outbox row, the work order, and
+        // (when the caller supplied one) 8.4's idempotency key all land in the same
+        // SaveChanges below: one transaction containing the work, its announcement, and the
+        // marker that says it happened. That is the whole epic in one commit.
+        await _eventPublisher.PublishAsync(new WorkOrderCreated(
+            newOrder.Id,
+            newOrder.OrderedItem.ItemId,
+            newOrder.OrderedItem.ItemName,
+            newOrder.OrderItemQty,
+            request.Requestor,
+            newOrder.CreatedUtc));
+
         try
         {
             var savedWorkOrder = await _workOrderRepository.Add(newOrder);
             if (savedWorkOrder is not null)
             {
-                await PublishSafely(new WorkOrderCreated(
-                    savedWorkOrder.Id,
-                    savedWorkOrder.OrderedItem.ItemId,
-                    savedWorkOrder.OrderedItem.ItemName,
-                    savedWorkOrder.OrderItemQty,
-                    request.Requestor,
-                    savedWorkOrder.CreatedUtc));
-
                 return new CreateWorkOrderResponse
                 {
                     Outcome = CreateWorkOrderOutcome.Success,
@@ -280,6 +277,15 @@ public class WorkOrderHandler
                 Outcome = CreateWorkOrderOutcome.Error,
                 Error = "Save action returned no response"
             };
+        }
+        catch (DuplicateKeyException)
+        {
+            // Not this handler's problem to answer, and it must escape the catch-all below. A
+            // unique-key collision on the way out of create means two requests carried the same
+            // Idempotency-Key (8.4); the filter that owns that contract is the only thing that
+            // can replay the winner's response. Swallowing it would turn a resolvable race into
+            // a 500.
+            throw;
         }
         catch (Exception e)
         {

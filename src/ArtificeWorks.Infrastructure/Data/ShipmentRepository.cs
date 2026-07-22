@@ -1,5 +1,6 @@
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Domain.Models.Shipping;
+using ArtificeWorks.Infrastructure.Messaging.Outbox;
 using ArtificeWorks.Infrastructure.Persistence;
 
 using Microsoft.EntityFrameworkCore;
@@ -47,12 +48,23 @@ public class ShipmentRepository : IShipmentRepository
         catch (DbUpdateException e) when (IsDuplicateShipment(e))
         {
             // Another delivery booked this order first. Detach the failed graph so a later
-            // SaveChanges on this scope doesn't retry the insert.
-            foreach (var line in shipment.Lines)
+            // SaveChanges on this scope doesn't retry the insert. Materialise the lines first:
+            // detaching one triggers EF's fixup, which mutates the navigation we'd be iterating.
+            foreach (var line in shipment.Lines.ToList())
             {
                 _context.Entry(line).State = EntityState.Detached;
             }
             _context.Entry(shipment).State = EntityState.Detached;
+
+            // And the announcement of a booking that didn't happen (8.1). The caller returns
+            // straight after this, so nothing would flush it — but leaving a staged event behind
+            // a failed write is the kind of thing that becomes true later by accident.
+            foreach (var staged in _context.ChangeTracker.Entries<OutboxMessage>()
+                         .Where(entry => entry.State == EntityState.Added)
+                         .ToList())
+            {
+                staged.State = EntityState.Detached;
+            }
 
             return false;
         }

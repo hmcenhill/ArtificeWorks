@@ -20,7 +20,7 @@ namespace ArtificeWorks.Application.Materials;
 /// <em>handled</em> one — the caller acks. Insufficient stock is a business result (the order
 /// goes OnHold with a reason), not a transient fault, and a duplicate delivery is by definition
 /// already handled. Nacks stay reserved for genuine faults (a dropped connection, a bug), which
-/// keeps this epic out of Epic 8's retry/DLQ story.
+/// since 8.2 means the retry ladder rather than a silent drop.
 /// </para>
 /// </summary>
 public sealed class MaterialPickingService
@@ -80,37 +80,55 @@ public sealed class MaterialPickingService
                 $"Product {workOrder.OrderedItem.ItemId} has no bill of materials; nothing to reserve.");
         }
 
-        var commit = await _reservationRepository.TryReserve(workOrderId, demand, cancellationToken);
+        // The note and the MaterialsReserved event are staged *inside* the reservation
+        // transaction (8.1): the pick, the audit line describing it and the announcement of it
+        // now commit as one. Before this, the note was a second save and the publish was a
+        // best-effort call after the commit — so a crash in between could leave inventory drawn
+        // with nothing downstream ever hearing about it, and the order stalled at Scheduled with
+        // no retry. That was the demo's worst failure mode: silence.
+        var commit = await _reservationRepository.TryReserve(
+            workOrderId,
+            demand,
+            stageWithReservation: reservation => StagePickAnnouncement(workOrder, demand, reservation, cancellationToken),
+            cancellationToken);
 
         return commit.Outcome switch
         {
-            ReservationOutcome.Reserved => await OnReserved(workOrder, demand, commit.Reservation!, cancellationToken),
+            ReservationOutcome.Reserved => OnReserved(workOrder, demand, commit.Reservation!),
             ReservationOutcome.InsufficientStock => await OnShort(workOrder, commit.ShortComponentIds ?? []),
             ReservationOutcome.AlreadyReserved => AlreadyPicked(workOrderId, reservedUtc: null),
             _ => throw new InvalidOperationException($"Unhandled reservation outcome {commit.Outcome}.")
         };
     }
 
-    private async Task<PickResult> OnReserved(
+    /// <summary>
+    /// Everything that describes a successful pick but isn't the draw itself: the state-history
+    /// note and the hand-off to production. Called by the repository from inside the reservation
+    /// transaction, so all of it is flushed by the same <c>SaveChanges</c> that inserts the
+    /// reservation row — and rolled back with it if a concurrent delivery wins the unique index.
+    /// </summary>
+    private async Task StagePickAnnouncement(
         Domain.Models.WorkOrder workOrder,
         IReadOnlyList<ComponentDemand> demand,
         MaterialReservation reservation,
         CancellationToken cancellationToken)
     {
-        // The pick itself (decrements + reservation row) is already committed. The history
-        // note is a second, non-transactional save: it is audit, not the invariant, and
-        // keeping it outside the reservation transaction keeps that transaction as short as
-        // the correctness argument needs it to be.
-        var summary = $"Materials picked: {reservation.Describe()}.";
-        workOrder.AppendNote(Author, Truncate(summary));
-        await _workOrderRepository.Update(workOrder);
+        workOrder.AppendNote(Author, Truncate($"Materials picked: {reservation.Describe()}."));
 
-        await PublishSafely(new MaterialsReserved(
+        await _eventPublisher.PublishAsync(new MaterialsReserved(
             workOrder.Id,
             workOrder.OrderedItem.ItemId,
             workOrder.OrderItemQty,
             demand.Select(d => new ReservedComponent(d.ComponentId, d.Quantity)).ToList(),
             reservation.ReservedUtc), cancellationToken);
+    }
+
+    private PickResult OnReserved(
+        Domain.Models.WorkOrder workOrder,
+        IReadOnlyList<ComponentDemand> demand,
+        MaterialReservation reservation)
+    {
+        var summary = $"Materials picked: {reservation.Describe()}.";
 
         _logger.LogInformation(
             "Reserved {LineCount} component line(s) for work order {WorkOrderId}: {Reserved}",
@@ -158,26 +176,6 @@ public sealed class MaterialPickingService
 
         _logger.LogInformation("Duplicate pick skipped (idempotent): {Summary}", summary);
         return new PickResult(PickOutcome.AlreadyPicked, summary);
-    }
-
-    /// <summary>
-    /// Publishing is best-effort, matching the rest of the system (4.1): the reservation is
-    /// already committed and is the source of truth, so a broker hiccup must not turn a
-    /// successful pick into a nack — the redelivery would only find a duplicate anyway.
-    /// Epic 8's outbox closes this gap for good.
-    /// </summary>
-    private async Task PublishSafely<T>(T @event, CancellationToken cancellationToken) where T : IntegrationEvent
-    {
-        try
-        {
-            await _eventPublisher.PublishAsync(@event, cancellationToken);
-        }
-        catch (Exception e)
-        {
-            _logger.LogError(e,
-                "Failed to publish {EventType}; the reservation is committed but the event was dropped.",
-                @event.EventType);
-        }
     }
 
     // State-history notes are capped at 500 chars by the schema; a wide BOM can exceed that.

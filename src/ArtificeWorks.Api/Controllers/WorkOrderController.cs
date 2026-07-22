@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 
 using ArtificeWorks.Api.Errors;
+using ArtificeWorks.Api.Middleware;
 using ArtificeWorks.Application.Commands;
 using ArtificeWorks.Application.Data;
 using ArtificeWorks.Application.Handlers;
@@ -66,8 +67,26 @@ public class WorkOrderController(
             : Ok(timeline);
     }
 
+    /// <summary>
+    /// Creates a work order.
+    /// <para>
+    /// <strong>Optional <c>Idempotency-Key</c> header (8.4).</strong> Send one and a repeat of the
+    /// same request — a double-click, a flaky connection, a proxy replaying a request — returns
+    /// the original <c>201</c> and its work order rather than creating a second one; the replay
+    /// is marked with an <c>Idempotency-Replayed: true</c> response header. Omit it and nothing
+    /// changes: the header is opt-in, and a visitor with curl need not know it exists.
+    /// </para>
+    /// <para>
+    /// Reusing a key with a <em>different</em> body is 422 <c>idempotency_key_reused</c> — a
+    /// client bug, and one worth being told about rather than having the first response quietly
+    /// replayed over it.
+    /// </para>
+    /// </summary>
     [HttpPost]
+    [Idempotent]
     [ProducesResponseType<WorkOrderDto>(StatusCodes.Status201Created)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status422UnprocessableEntity)]
     public async Task<ActionResult<WorkOrderDto>> Create([FromBody] CreateWorkOrderRequest request)
     {
         var response = await _workOrderHandler.CreateWorkOrder(request);

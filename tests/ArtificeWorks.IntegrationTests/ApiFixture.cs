@@ -1,9 +1,10 @@
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
-using ArtificeWorks.Application.Messaging;
 using ArtificeWorks.Application.Shipping;
+using ArtificeWorks.Infrastructure.Messaging.Outbox;
 using ArtificeWorks.Infrastructure.Persistence;
 
 using Testcontainers.PostgreSql;
@@ -52,15 +53,20 @@ public class ApiFixture : IAsyncLifetime
 
                     services.AddDbContext<ArtificeWorksDbContext>(options => options.UseNpgsql(_container.GetConnectionString()));
 
-                    // These tests assert HTTP + persistence, not messaging: replace the
-                    // RabbitMQ publisher with a no-op so no broker is required (4.2 covers
-                    // the real publish→consume path).
-                    var publisherRegistration = services.SingleOrDefault(d => d.ServiceType == typeof(IEventPublisher));
-                    if (publisherRegistration is not null)
+                    // Since 8.1 the publisher application code gets writes an outbox row rather
+                    // than touching the broker, so these tests keep the REAL publisher and can
+                    // assert on `outbox_messages` — the point of the story is that the event is
+                    // part of the same transaction as the work, and a no-op here would hide
+                    // exactly that. What does need a broker is the dispatcher, so its two hosted
+                    // services come out instead.
+                    foreach (var hosted in services
+                                 .Where(d => d.ServiceType == typeof(IHostedService)
+                                     && (d.ImplementationType == typeof(OutboxDispatcher)
+                                         || d.ImplementationType == typeof(RetentionSweepService)))
+                                 .ToList())
                     {
-                        services.Remove(publisherRegistration);
+                        services.Remove(hosted);
                     }
-                    services.AddScoped<IEventPublisher, NoOpEventPublisher>();
 
                     var carrierRegistration = services.SingleOrDefault(d => d.ServiceType == typeof(ICarrierBooking));
                     if (carrierRegistration is not null)

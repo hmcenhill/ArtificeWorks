@@ -135,16 +135,18 @@ public sealed class InspectionService
         run.RecordVerdicts(passed, scrapped);
         var resolution = Resolve(workOrder, Author);
 
-        // Verdicts, the run row (the dedupe key) and whatever transition the verdicts caused
-        // all commit together. A concurrent duplicate loses on the unique key and takes its
-        // verdicts and its transition down with it — so no second InspectionPassed and no
-        // double-burned rebuild attempt (6.4).
+        // Staged before the commit (8.1), so the outcome's announcement rides the same
+        // transaction as the verdicts that produced it.
+        await PublishResolution(workOrder, resolution, cancellationToken);
+
+        // Verdicts, the run row (the dedupe key), whatever transition the verdicts caused and the
+        // outbox row announcing it all commit together. A concurrent duplicate loses on the
+        // unique key and takes its verdicts, its transition and its announcement down with it —
+        // so no second InspectionPassed and no double-burned rebuild attempt (6.4).
         if (!await _runRepository.TryCommitInspection(run, cancellationToken))
         {
             return AlreadyInspected(workOrderId, attemptNumber);
         }
-
-        await PublishResolution(workOrder, resolution, cancellationToken);
 
         _logger.LogInformation(
             "Work order {WorkOrderId} attempt {Attempt}: {Passed} passed, {Scrapped} scrapped — {Outcome}.",
@@ -210,8 +212,8 @@ public sealed class InspectionService
         // order-level outcome exactly as the automatic path does. No run row is written: this
         // is a single-unit decision, and the unit's own verdict guard is its dedupe.
         var resolution = Resolve(workOrder, recordedBy);
-        await _workOrderRepository.Update(workOrder);
         await PublishResolution(workOrder, resolution, cancellationToken);
+        await _workOrderRepository.Update(workOrder);
 
         _logger.LogInformation(
             "Manual verdict by {RecordedBy} on unit {Serial} of work order {WorkOrderId}: {Summary} — {Outcome}.",
@@ -280,16 +282,20 @@ public sealed class InspectionService
     }
 
     /// <summary>
-    /// Announces the outcome. Each branch publishes its <em>concrete</em> event type on
-    /// purpose: the publisher serializes <c>EventEnvelope&lt;T&gt;</c>, and handing it the
+    /// Stages the outcome's announcement. Each branch publishes its <em>concrete</em> event type
+    /// on purpose: the publisher serializes <c>EventEnvelope&lt;T&gt;</c>, and handing it the
     /// <see cref="IntegrationEvent"/> base type would serialize an empty payload.
+    /// <para>
+    /// Called before the commit since 8.1 — this writes an outbox row, it does not touch the
+    /// broker, so it belongs inside the unit of work rather than after it.
+    /// </para>
     /// </summary>
     private async Task PublishResolution(WorkOrder workOrder, Resolution resolution, CancellationToken cancellationToken)
     {
         switch (resolution.Outcome)
         {
             case InspectionOutcome.Passed:
-                await PublishSafely(new InspectionPassed(
+                await _eventPublisher.PublishAsync(new InspectionPassed(
                     workOrder.Id,
                     workOrder.OrderedItem.ItemId,
                     workOrder.AssignedStock
@@ -300,7 +306,7 @@ public sealed class InspectionService
                 break;
 
             case InspectionOutcome.ReworkRequired:
-                await PublishSafely(new ReworkRequired(
+                await _eventPublisher.PublishAsync(new ReworkRequired(
                     workOrder.Id,
                     workOrder.OrderedItem.ItemId,
                     ScrappedOnAttempt(workOrder, workOrder.BuildAttempt),
@@ -310,7 +316,7 @@ public sealed class InspectionService
                 break;
 
             case InspectionOutcome.Faulted:
-                await PublishSafely(new WorkOrderFaulted(
+                await _eventPublisher.PublishAsync(new WorkOrderFaulted(
                     workOrder.Id,
                     workOrder.OrderedItem.ItemId,
                     resolution.Summary,
@@ -344,20 +350,5 @@ public sealed class InspectionService
             "Work order {WorkOrderId} could not be inspected (attempt {Attempt}, status {Status}): {Error}",
             workOrder.Id, attemptNumber, workOrder.CurrentStatus, error);
         return new InspectionResult(InspectionOutcome.Rejected, error, attemptNumber);
-    }
-
-    /// <summary>Best-effort publish; see <see cref="ProductionService"/> for the reasoning.</summary>
-    private async Task PublishSafely<T>(T @event, CancellationToken cancellationToken) where T : IntegrationEvent
-    {
-        try
-        {
-            await _eventPublisher.PublishAsync(@event, cancellationToken);
-        }
-        catch (Exception e)
-        {
-            _logger.LogError(e,
-                "Failed to publish {EventType}; the inspection is committed but the event was dropped.",
-                @event.EventType);
-        }
     }
 }

@@ -4,6 +4,8 @@ using ArtificeWorks.Domain.Models;
 using ArtificeWorks.Domain.Models.Materials;
 using ArtificeWorks.Domain.Models.Production;
 using ArtificeWorks.Domain.Models.Shipping;
+using ArtificeWorks.Infrastructure.Messaging.DeadLetters;
+using ArtificeWorks.Infrastructure.Messaging.Outbox;
 
 namespace ArtificeWorks.Infrastructure.Persistence;
 
@@ -27,6 +29,13 @@ public class ArtificeWorksDbContext : DbContext
     public DbSet<Shipment> Shipments => Set<Shipment>();
     public DbSet<ShipmentLine> ShipmentLines => Set<ShipmentLine>();
 
+    // Epic 8. These three are plumbing rather than domain — they describe how work is announced,
+    // retried and recovered, not what the factory makes — which is why their types live in
+    // Infrastructure next to the messaging code and not in Domain with the aggregates.
+    public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
+    public DbSet<DeadLetter> DeadLetters => Set<DeadLetter>();
+    public DbSet<IdempotencyRecord> IdempotencyKeys => Set<IdempotencyRecord>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -36,6 +45,20 @@ public class ArtificeWorksDbContext : DbContext
             entity.ToTable("work_orders");
 
             entity.HasKey(x => x.Id);
+
+            // THE work order's first optimistic-concurrency token (8.1), and the end of a caveat
+            // standing since 3.4. Postgres maintains `xmin` on every row already, so this costs no
+            // column, no migration on the next aggregate that needs one, and no domain property
+            // that means nothing to the domain. Two writers who both loaded the same order now
+            // produce a DbUpdateConcurrencyException for the loser instead of a silent
+            // last-write-wins — which is classified as a *transient* fault, so 8.2's retry ladder
+            // replays it and the reload succeeds because the conflict is gone.
+            // (`UseXminAsConcurrencyToken()` was the old spelling; Npgsql 9 removed it in favour of
+            // mapping the system column explicitly, which is what this is.)
+            entity.Property<uint>("xmin")
+                .HasColumnType("xid")
+                .ValueGeneratedOnAddOrUpdate()
+                .IsConcurrencyToken();
 
             // The domain generates aggregate ids (Guid.NewGuid() in the constructor),
             // so the store must never generate them. Without this, EF treats a
@@ -382,6 +405,112 @@ public class ArtificeWorksDbContext : DbContext
                 .WithMany(x => x.Lines)
                 .HasForeignKey(x => x.ShipmentId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<OutboxMessage>(entity =>
+        {
+            entity.ToTable("outbox_messages");
+
+            entity.HasKey(x => x.Id);
+
+            // The ONE store-generated key in this schema, and it is generated on purpose: the id
+            // is the publication order. Everything else here sets ValueGeneratedNever because the
+            // domain makes its own ids; an outbox row has no domain to make one.
+            entity.Property(x => x.Id)
+                .ValueGeneratedOnAdd();
+
+            entity.Property(x => x.EventId)
+                .IsRequired();
+
+            entity.Property(x => x.EventType)
+                .HasMaxLength(200)
+                .IsRequired();
+
+            entity.Property(x => x.CorrelationId)
+                .IsRequired();
+
+            entity.Property(x => x.Payload)
+                .IsRequired();
+
+            entity.Property(x => x.OccurredUtc)
+                .IsRequired();
+
+            entity.Property(x => x.LastError)
+                .HasMaxLength(1000);
+
+            // The dispatcher's only query: unsent rows, in id order. A filtered index keeps it
+            // cheap as the sent rows pile up behind it between sweeps.
+            entity.HasIndex(x => x.Id)
+                .HasDatabaseName("ix_outbox_messages_unsent")
+                .HasFilter("\"SentUtc\" IS NULL");
+        });
+
+        modelBuilder.Entity<DeadLetter>(entity =>
+        {
+            entity.ToTable("dead_letters");
+
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.Id)
+                .ValueGeneratedNever();
+
+            entity.Property(x => x.EventType)
+                .HasMaxLength(200)
+                .IsRequired();
+
+            entity.Property(x => x.Payload)
+                .IsRequired();
+
+            entity.Property(x => x.LastError)
+                .HasMaxLength(2000)
+                .IsRequired();
+
+            entity.Property(x => x.ParkedUtc)
+                .IsRequired();
+
+            // Deliberately NOT a foreign key to work_orders. A dead letter must survive a payload
+            // whose work order id is wrong, missing, or refers to something deleted — a table
+            // whose job is holding broken messages cannot afford referential integrity that
+            // rejects them.
+            entity.HasIndex(x => x.WorkOrderId);
+
+            // The list query: newest first.
+            entity.HasIndex(x => x.ParkedUtc);
+        });
+
+        modelBuilder.Entity<IdempotencyRecord>(entity =>
+        {
+            entity.ToTable("idempotency_keys");
+
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.Id)
+                .ValueGeneratedNever();
+
+            entity.Property(x => x.Key)
+                .HasMaxLength(200)
+                .IsRequired();
+
+            entity.Property(x => x.Endpoint)
+                .HasMaxLength(200)
+                .IsRequired();
+
+            entity.Property(x => x.RequestHash)
+                .HasMaxLength(64)
+                .IsRequired();
+
+            entity.Property(x => x.ResponseLocation)
+                .HasMaxLength(500);
+
+            entity.Property(x => x.CreatedUtc)
+                .IsRequired();
+
+            // THE guarantee for 8.4, and the same shape 5.4 established: not the pre-check read,
+            // this index. Two simultaneous requests carrying one key both pass the read and one
+            // of them loses here — which is what makes "exactly one work order" true rather than
+            // merely likely.
+            entity.HasIndex(x => x.Key)
+                .IsUnique();
         });
     }
 }

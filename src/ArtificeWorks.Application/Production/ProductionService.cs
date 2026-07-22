@@ -99,9 +99,20 @@ public sealed class ProductionService
             .Select(unit => unit.SerialNumber)
             .ToList();
 
-        // The run row, the new units, the Scheduled → InProcess transition and its history entry
-        // all commit in one SaveChanges. A concurrent duplicate loses on the unique key and its
-        // units roll back with it, so an attempt builds exactly once (6.4).
+        // Staged before the commit, not published after it (8.1): the hand-off to inspection is
+        // an outbox row on the same unit of work as the build.
+        await _eventPublisher.PublishAsync(new ProductionCompleted(
+            workOrder.Id,
+            workOrder.OrderedItem.ItemId,
+            built,
+            attemptNumber,
+            DateTime.UtcNow), cancellationToken);
+
+        // The run row, the new units, the Scheduled → InProcess transition, its history entry and
+        // now the outbox row all commit in one SaveChanges. A concurrent duplicate loses on the
+        // unique key and its units roll back with it — along with its announcement, so the loser
+        // is silent as well as inert. An attempt builds exactly once, and is announced exactly
+        // once (6.4, extended by 8.1).
         var committed = await _runRepository.TryCommitAttempt(
             new ProductionRun(workOrderId, attemptNumber, (uint)built.Count), cancellationToken);
 
@@ -109,13 +120,6 @@ public sealed class ProductionService
         {
             return AlreadyBuilt(workOrderId, attemptNumber);
         }
-
-        await PublishSafely(new ProductionCompleted(
-            workOrder.Id,
-            workOrder.OrderedItem.ItemId,
-            built,
-            attemptNumber,
-            DateTime.UtcNow), cancellationToken);
 
         var summary = $"Built {built.Count} unit(s) on attempt {attemptNumber}.";
         _logger.LogInformation(
@@ -135,25 +139,6 @@ public sealed class ProductionService
         var summary = $"Work order {workOrderId} has already built attempt {attemptNumber}; skipping duplicate.";
         _logger.LogInformation("Duplicate production skipped (idempotent): {Summary}", summary);
         return new ProductionResult(ProductionOutcome.AlreadyBuilt, summary, attemptNumber);
-    }
-
-    /// <summary>
-    /// Best-effort publish, matching the rest of the system (4.1): the build is already
-    /// committed and is the source of truth, so a broker hiccup must not turn a successful
-    /// attempt into a nack. Epic 8's outbox closes this gap.
-    /// </summary>
-    private async Task PublishSafely<T>(T @event, CancellationToken cancellationToken) where T : IntegrationEvent
-    {
-        try
-        {
-            await _eventPublisher.PublishAsync(@event, cancellationToken);
-        }
-        catch (Exception e)
-        {
-            _logger.LogError(e,
-                "Failed to publish {EventType}; the build is committed but the event was dropped.",
-                @event.EventType);
-        }
     }
 
     // State-history notes are capped at 500 chars by the schema.

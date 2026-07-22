@@ -49,12 +49,12 @@ The replay arrow closing back onto the outbox dispatcher is the detail worth not
 
 ## Acceptance Criteria
 
-- [ ] A state change and its event are never separated — no event can be dropped after a commit
-- [ ] Transient failures retry with backoff and eventually succeed or dead-letter
-- [ ] Permanent failures dead-letter cleanly without blocking the queue
-- [ ] API idempotency keys prevent duplicate effects
-- [ ] Failed work can be inspected and optionally reprocessed via API
-- [ ] Concurrent updates to one work order are rejected, not silently merged
+- [x] A state change and its event are never separated — no event can be dropped after a commit
+- [x] Transient failures retry with backoff and eventually succeed or dead-letter
+- [x] Permanent failures dead-letter cleanly without blocking the queue
+- [x] API idempotency keys prevent duplicate effects
+- [x] Failed work can be inspected and optionally reprocessed via API
+- [x] Concurrent updates to one work order are rejected, not silently merged
 
 ## Stories
 
@@ -80,6 +80,38 @@ It does **not** make delivery exactly-once. The dispatcher can crash between pub
 That is the right trade only because duplication is already solved. Epics 5–7 built a dedupe key at every stage (`material_reservations.work_order_id`, `(work_order_id, attempt_number)` on the run tables, `shipments.work_order_id`, and dispatch's state machine), each of them a constraint that commits with its work. This epic is where that groundwork gets spent: retries, redeliveries, and replays are all the same situation from a handler's point of view, and all three are answered by keys that already exist.
 
 If a test in 8.2 or 8.3 needs a *new* guard to pass, that is a genuine finding about 6.4's keys — not a reason to weaken the retry.
+
+## As built — where the implementation departed from the plan
+
+All four stories landed. Five decisions were made during the work that the grooming had left open
+or had guessed differently:
+
+- **One migration, not three.** `ReliabilityAndRecovery` carries `outbox_messages`, `dead_letters`
+  and `idempotency_keys`, matching Epics 6 and 7's one-migration-per-epic shape. The `xmin`
+  mapping needs no DDL at all — and the scaffolder's `AddColumn("xmin")` had to be deleted by
+  hand, because Postgres rejects adding a column that collides with a system one. There is a note
+  in the migration saying so.
+- **The retry ladder is three fanout exchanges, not one direct `artifice.retry`.** A delay queue
+  dead-letters on expiry using the message's *own* routing key, and that key must still be the
+  original event type or the message returns unroutable. A direct retry exchange would have to
+  spend the routing key selecting the rung. Encoding the rung in the exchange instead is what
+  lets a retried message re-enter the pipeline with no special-case code in the consumer.
+- **Three retries, four deliveries.** "Cap at the ladder's length (3), then park" was ambiguous.
+  As built: attempts 1–3 each climb a rung, and a fourth failure parks — so all three rungs are
+  used, which is what the diagram clearly intended.
+- **Picking's transaction grew to cover its announcement.** `TryReserve` gained a
+  `stageWithReservation` callback so the state-history note and the `MaterialsReserved` outbox row
+  commit *inside* the reservation transaction. Without it, picking would have been the one stage
+  where the event was not atomic with the work. This also closes 5.2's smaller caveat about the
+  note being a second save.
+- **A second replay needs `?force=true`** (8.3 left this open). Not a safety interlock — the
+  dedupe keys make a repeat replay a skip — but a second click is usually asking "did the first
+  one work?", and that deserves an answer rather than another silent re-send.
+
+One shape worth recording because it is the epic's thesis in miniature: a `POST /work-orders`
+carrying an `Idempotency-Key` now commits **the work order, its outbox row, and the key** in a
+single `SaveChanges`. The work, its announcement, and the marker that says it happened, in one
+transaction.
 
 ## Notes
 

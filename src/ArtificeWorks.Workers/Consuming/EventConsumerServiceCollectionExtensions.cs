@@ -41,9 +41,23 @@ public static class EventConsumerServiceCollectionExtensions
             EventType: EventTypeOf<TEvent>(),
             Dispatch: async (provider, body, cancellationToken) =>
             {
-                var envelope = JsonSerializer.Deserialize<EventEnvelope<TEvent>>(body.Span, SerializerOptions)
-                    ?? throw new InvalidOperationException(
-                        $"Envelope for {typeof(TEvent).Name} deserialized to null.");
+                EventEnvelope<TEvent> envelope;
+                try
+                {
+                    // A body that won't parse is permanent, not transient: the same bytes will
+                    // fail identically on every retry, so 8.2 sends it straight to the parked
+                    // queue rather than burning the ladder on it. Marking it here, at the only
+                    // place that knows the difference between "bad message" and "bad moment",
+                    // keeps the consumer loop's classification honest.
+                    envelope = JsonSerializer.Deserialize<EventEnvelope<TEvent>>(body.Span, SerializerOptions)
+                        ?? throw new PoisonMessageException(
+                            $"Envelope for {typeof(TEvent).Name} deserialized to null.");
+                }
+                catch (JsonException e)
+                {
+                    throw new PoisonMessageException(
+                        $"Body could not be deserialized as an envelope for {typeof(TEvent).Name}: {e.Message}", e);
+                }
 
                 var handler = provider.GetRequiredService<IIntegrationEventHandler<TEvent>>();
                 await handler.HandleAsync(envelope, cancellationToken);

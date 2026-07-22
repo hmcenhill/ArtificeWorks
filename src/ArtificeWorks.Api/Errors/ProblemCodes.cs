@@ -42,6 +42,24 @@ public static class ProblemCodes
 
     public const string NothingToShip = "nothing_to_ship";
 
+    // Recovery (8.3, 8.4).
+    public const string DeadLetterNotFound = "dead_letter_not_found";
+    public const string DeadLetterAlreadyReplayed = "dead_letter_already_replayed";
+
+    /// <summary>
+    /// The same <c>Idempotency-Key</c> arrived with a different body — a client bug, and
+    /// deliberately <em>422</em> rather than the 409 that <see cref="ProductAlreadyExists"/>
+    /// already means. Nothing here conflicts with the resource's state; the request contradicts
+    /// itself, which is what 422 is for.
+    /// </summary>
+    public const string IdempotencyKeyReused = "idempotency_key_reused";
+
+    /// <summary>
+    /// A request with this key is still in flight (or died mid-flight). There is no stored
+    /// response to replay yet, and inventing one would be a lie.
+    /// </summary>
+    public const string IdempotencyKeyInFlight = "idempotency_key_in_flight";
+
     /// <summary>Maps a domain transition-rejection code onto its wire reason code.</summary>
     public static string ForTransition(TransitionErrorCode code) => code switch
     {

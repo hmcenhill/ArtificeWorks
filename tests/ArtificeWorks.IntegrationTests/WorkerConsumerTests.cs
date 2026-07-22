@@ -69,6 +69,9 @@ public class WorkerConsumerTests : IAsyncLifetime
             ["RabbitMqConfiguration:Password"] = Uri.UnescapeDataString(userInfo.Length > 1 ? userInfo[1] : string.Empty),
             ["RabbitMqConfiguration:VirtualHost"] = "/",
             ["RabbitMqConfiguration:ExchangeName"] = Exchange,
+            // The shipped 1s poll would add a second per hop to a six-hop pipeline. The dispatcher
+            // is the same code either way; only the patience differs.
+            ["Outbox:PollIntervalMs"] = "100",
         };
 
         var builder = Host.CreateApplicationBuilder();
@@ -93,6 +96,12 @@ public class WorkerConsumerTests : IAsyncLifetime
         // Full messaging (connection + publisher) so this test drives the REAL publish path,
         // plus the consumption plumbing and every handler in the pipeline.
         builder.Services.AddRabbitMqMessaging(builder.Configuration);
+
+        // Since 8.1 publishing is a two-step: handlers write outbox rows, this drains them. Without
+        // it the pipeline is inert — which is itself worth knowing, and is why the dispatcher is
+        // registered in both real hosts.
+        builder.Services.AddOutboxDispatcher();
+
         builder.Services.AddEventConsumer();
         builder.Services.AddEventHandler<WorkOrderScheduled, WorkOrderScheduledHandler>();
         builder.Services.AddEventHandler<MaterialsReserved, MaterialsReservedHandler>();
@@ -169,7 +178,9 @@ public class WorkerConsumerTests : IAsyncLifetime
             await channel.QueueBindAsync(CompletedObserverQueue, Exchange, completedKey);
         }
 
-        // Act — publish the real scheduling event through the real publisher.
+        // Act — publish the real scheduling event through the real publisher, which since 8.1
+        // means staging an outbox row and committing it. Nothing reaches the broker until the
+        // dispatcher picks it up, exactly as in production.
         var correlationId = Guid.NewGuid();
         using (var scope = _host.Services.CreateScope())
         {
@@ -177,6 +188,8 @@ public class WorkerConsumerTests : IAsyncLifetime
             var publisher = scope.ServiceProvider.GetRequiredService<IEventPublisher>();
             await publisher.PublishAsync(new WorkOrderScheduled(
                 workOrderId, product.ItemId, product.ItemName, 2, DateTime.UtcNow));
+
+            await scope.ServiceProvider.GetRequiredService<ArtificeWorksDbContext>().SaveChangesAsync();
         }
 
         // Assert — the pick landed in Postgres...

@@ -22,8 +22,14 @@ builder.Logging.AddSimpleConsole(options => options.IncludeScopes = true);
 
 builder.Services.Configure<RedisConfiguration>(builder.Configuration.GetSection(nameof(RedisConfiguration)));
 
-// RabbitMQ connection, event publisher, and per-request correlation context.
+// RabbitMQ connection, event publisher, and per-request correlation context. Since 8.1 the
+// publisher application code gets writes to the outbox rather than to the broker...
 builder.Services.AddRabbitMqMessaging(builder.Configuration);
+
+// ...and this is what drains it. The API runs a dispatcher of its own because the API is where
+// the pipeline starts: a dropped `work-order.scheduled` strands an order before it has moved at
+// all, which was the demo's most likely silent failure.
+builder.Services.AddOutboxDispatcher();
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
@@ -81,6 +87,10 @@ builder.Services.AddProductionAndInspection(builder.Configuration);
 // the same workflow the worker does, and releasing an order held at Delivery re-requests a
 // booking (7.3), which means the API reads shipments too.
 builder.Services.AddShipping(builder.Configuration);
+
+// Recovery (8.3). The API is the half of this that a human touches: see what failed, and put it
+// back. The worker owns the other half, the drain that turns parked messages into rows.
+builder.Services.AddDeadLetters();
 
 builder.Services.AddScoped<ProductHandler>();
 builder.Services.AddScoped<WorkOrderHandler>();

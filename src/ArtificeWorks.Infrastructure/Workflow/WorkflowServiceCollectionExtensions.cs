@@ -1,6 +1,7 @@
 using ArtificeWorks.Application.Inspection;
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Production;
+using ArtificeWorks.Application.Recovery;
 using ArtificeWorks.Application.Shipping;
 using ArtificeWorks.Infrastructure.Data;
 
@@ -74,6 +75,24 @@ public static class WorkflowServiceCollectionExtensions
 
         services.AddScoped<IShipmentRepository, ShipmentRepository>();
         services.AddScoped<ShippingService>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers the Epic 8 recovery surface: the dead-letter queries and the replay workflow.
+    /// <para>
+    /// Both hosts again, and for a new reason this time — the API serves
+    /// <c>/system/dead-letters</c>, while the worker's parked-queue drain needs the concrete
+    /// repository to write rows with. The concrete type is registered as well as the interface
+    /// because the drain writes and the API reads, and only the reader deserves the abstraction.
+    /// </para>
+    /// </summary>
+    public static IServiceCollection AddDeadLetters(this IServiceCollection services)
+    {
+        services.AddScoped<DeadLetterRepository>();
+        services.AddScoped<IDeadLetterRepository>(sp => sp.GetRequiredService<DeadLetterRepository>());
+        services.AddScoped<DeadLetterService>();
 
         return services;
     }

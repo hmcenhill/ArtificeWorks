@@ -43,10 +43,19 @@ builder.Services.AddShipping(builder.Configuration);
 // The handler sets the correlation id per message from the inbound envelope.
 builder.Services.AddRabbitMqMessaging(builder.Configuration);
 
+// The outbox dispatcher (8.1). Every handler now stages its next-stage event in the same
+// transaction as the work; this is the loop that puts those rows on the wire.
+builder.Services.AddOutboxDispatcher();
+
 // Consumption plumbing + handlers. Registering a handler is the ONLY change needed to
 // consume a new event type — the consumer and dispatcher stay untouched.
 builder.Services.AddEventConsumer();
 builder.Services.AddEventHandler<WorkOrderScheduled, WorkOrderScheduledHandler>();
+
+// Recovery (8.3): drain artifice.parked into dead_letters. A separate consumer from the main
+// loop on purpose — the pipeline's handlers must never run for a message they already failed.
+builder.Services.AddDeadLetters();
+builder.Services.AddHostedService<ParkedQueueDrain>();
 
 // Epic 6. Note the cycle: rework-required is published by this same process and consumed by
 // it, so the rebuild loop really does go out over the broker and come back.
