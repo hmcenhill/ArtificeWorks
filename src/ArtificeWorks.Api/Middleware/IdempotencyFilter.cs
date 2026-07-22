@@ -107,8 +107,21 @@ public sealed class IdempotencyFilter : IAsyncResourceFilter
                 // Somebody else committed this key while we were working, taking our order down
                 // with the rollback. Answer with their response, not an error: from the client's
                 // point of view its request succeeded exactly once, which is what it asked for.
-                executed.Result = await ReplayWinnerAsync(key, requestHash, context.HttpContext.RequestAborted);
+                //
+                // The replay is written here rather than handed back as `executed.Result`. A
+                // resource filter wraps *result execution*, so this post-next() code runs after
+                // the pipeline is already past it — a result assigned now is never executed, and
+                // the loser of the race gets a bare 200 with no body. (The short-circuit above is
+                // different: `ResourceExecutingContext.Result` runs instead of the action, so the
+                // ordinary replay path can and does hand its result back.)
+                var replay = await ReplayWinnerAsync(key, requestHash, context.HttpContext.RequestAborted);
+                await replay.ExecuteResultAsync(new ActionContext(
+                    context.HttpContext, context.RouteData, context.ActionDescriptor));
+
                 executed.ExceptionHandled = true;
+
+                // The response is already written; leave nothing behind that could write it twice.
+                executed.Result = new EmptyResult();
             }
 
             // Anything else is a real failure; let it reach the exception handler untouched. The

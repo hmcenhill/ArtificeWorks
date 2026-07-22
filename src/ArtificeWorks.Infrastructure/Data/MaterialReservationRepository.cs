@@ -119,8 +119,9 @@ public class MaterialReservationRepository : IMaterialReservationRepository
 
             // The failed insert leaves the reservation graph tracked as Added; detach it so a
             // later SaveChanges on this scope (the caller still writes state history) doesn't
-            // retry it.
-            foreach (var reservationLine in reservation.Lines)
+            // retry it. Snapshot the lines first: detaching a line triggers EF relationship
+            // fixup, which removes it from the reservation's own backing list mid-enumeration.
+            foreach (var reservationLine in reservation.Lines.ToList())
             {
                 _context.Entry(reservationLine).State = EntityState.Detached;
             }

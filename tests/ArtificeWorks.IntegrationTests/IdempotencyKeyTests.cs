@@ -85,16 +85,26 @@ public class IdempotencyKeyTests : IClassFixture<ApiFixture>
         // Raced against Postgres, the 5.3 split. Both requests pass the pre-check read; the
         // unique index on idempotency_keys.Key is what actually resolves it, and the loser's work
         // order rolls back with its rejected marker.
+        //
+        // Eight, not four: with four, callers routinely arrive late enough to be answered by the
+        // pre-check read, and the losing-race branch — the one that has to replay the winner's
+        // response out of a filter whose result will never be executed for it — went untested for
+        // whole runs at a time.
         var responses = await Task.WhenAll(
-            Enumerable.Range(0, 4).Select(_ => Post(request, key)));
+            Enumerable.Range(0, 8).Select(_ => Post(request, key)));
 
         Assert.Equal(1, await CountOrdersFor("IDEM-RACE"));
 
         // Every caller gets a usable answer: the winner's 201, a replay of it, or an honest
         // "still in flight". None of them gets a 500, and none of them gets a second order.
-        Assert.All(responses, response => Assert.True(
-            response.StatusCode is HttpStatusCode.Created or HttpStatusCode.Conflict,
-            $"Unexpected status {response.StatusCode}."));
+        foreach (var response in responses)
+        {
+            // The body is in the message on purpose: the failure this guards against was a bare
+            // 200 with nothing in it, which a status-only assertion describes very poorly.
+            Assert.True(
+                response.StatusCode is HttpStatusCode.Created or HttpStatusCode.Conflict,
+                $"Unexpected status {response.StatusCode} with body <<{await response.Content.ReadAsStringAsync()}>>.");
+        }
 
         Assert.Contains(responses, response => response.StatusCode == HttpStatusCode.Created);
 
