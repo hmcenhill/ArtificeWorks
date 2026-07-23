@@ -2,10 +2,9 @@ import { Link, useParams } from "react-router-dom";
 
 import { ApiError, fetchTimeline } from "../api/client";
 import type { TimelineEntry, TimelineKind, WorkOrderTimeline } from "../api/types";
-import { usePolledData } from "../hooks/usePolledData";
+import { useLiveData } from "../hooks/useLiveData";
+import { useReloadOnStream } from "../hooks/useReloadOnStream";
 import { absoluteTime, relativeTime } from "../util/time";
-
-const POLL_MS = 5000;
 
 const KIND_ICON: Record<TimelineKind, string> = {
   state: "◆",
@@ -28,11 +27,14 @@ const KIND_LABEL: Record<TimelineKind, string> = {
 export function OrderDetailView() {
   const { id = "" } = useParams();
 
-  const { data, error, loading, refreshing, refresh } = usePolledData<WorkOrderTimeline>(
+  const { data, error, loading, refreshing, reload } = useLiveData<WorkOrderTimeline>(
     (signal) => fetchTimeline(id, signal),
     [id],
-    POLL_MS,
   );
+
+  // Live while open: an event for *this* order re-fetches its timeline, so a watched order animates
+  // through its stages. A reconnect reconciles. Events for other orders are ignored.
+  useReloadOnStream(reload, (event) => event.workOrderId === id);
 
   return (
     <section className="detail">
@@ -41,7 +43,7 @@ export function OrderDetailView() {
           ← Board
         </Link>
         {refreshing && <span className="board-live" aria-label="refreshing" />}
-        <button type="button" className="refresh-button" onClick={refresh}>
+        <button type="button" className="refresh-button" onClick={reload}>
           ↻ Refresh
         </button>
       </div>
@@ -49,7 +51,7 @@ export function OrderDetailView() {
       {loading ? (
         <p className="notice">Loading the order's story…</p>
       ) : error ? (
-        <DetailError error={error} onRetry={refresh} />
+        <DetailError error={error} onRetry={reload} />
       ) : (
         <TimelineBody timeline={data!} />
       )}
@@ -80,7 +82,8 @@ function TimelineBody({ timeline }: { timeline: WorkOrderTimeline }) {
         <code className="detail-id">{timeline.workOrderId}</code>
         <p className="detail-caption">
           What happened, in order — derived from the records the factory keeps. It is the story, not
-          the message log: nothing here proves an event flowed. The live event feed comes in 11.2.
+          the message log: nothing here proves an event flowed. This view is live — an event for
+          this order re-fetches it, so it grows as the order moves.
         </p>
       </header>
 

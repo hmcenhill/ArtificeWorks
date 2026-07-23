@@ -46,11 +46,26 @@ npm run preview   # serve the built bundle locally
 `npm run build` produces a self-contained static bundle in `dist/`. Both `node_modules/` and
 `dist/` are git-ignored.
 
-## What's here (11.1)
+## What's here (11.1–11.2)
 
 - **Board** (`/`) — every live order as a card in its stage column (Intake → … → Completed, with
-  On Hold / Fault / Cancelled surfaced separately). Visitor vs simulated orders are badged. The
-  board polls on an interval and has a manual refresh; realtime (SignalR) arrives in 11.2.
+  On Hold / Fault / Cancelled surfaced separately). Visitor vs simulated orders are badged. Since
+  11.2 the board is **live over SignalR**: a factory event reloads it (debounced), so a card moves
+  between columns on its own — no interval poll. A reconnect reconciles; the manual refresh remains.
 - **Order detail** (`/orders/:id`) — the `/work-orders/{id}/timeline` endpoint rendered as one
   chronological column, switched on each entry's `kind` (state / pick / build / inspection /
-  verdict / shipment).
+  verdict / shipment). Live too: an event for *this* order re-fetches it, so it grows as the order
+  moves.
+- **Live event feed** (11.2) — real broker traffic, newest-first, capped to a rolling window: every
+  published `work-order.*` event as it happens, including the `faulted`/`completed` announcements.
+  Each line is tagged visitor vs robot when the board knows the order. It is a tail, not a log.
+- **Connection status** — always visible in the header (Live / Reconnecting… / Offline): a demo
+  that silently went dead is worse than one that says so.
+
+### How realtime works
+
+The API runs a read-only relay (`DashboardRelay`) on its own `artifice.dashboard` queue, bound to
+every published routing key, and pushes each event to browsers over the `/hubs/dashboard` SignalR
+hub. The client (`src/realtime/RealtimeProvider.tsx`) owns one connection for the whole app with
+automatic reconnect. See [docs/messaging-topology.md](../docs/messaging-topology.md) for the broker
+side. Dev proxies `/hubs` **with the websocket upgrade** (`ws: true` in `vite.config.ts`).

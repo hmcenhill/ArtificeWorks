@@ -198,6 +198,26 @@ public class EventContractTests
         Assert.Equal(1, new WorkOrderScheduled(Guid.NewGuid(), "p", "P", 1, DateTime.UtcNow).SchemaVersion);
     }
 
+    /// <summary>
+    /// The dashboard relay (11.2) binds its queue to <see cref="WorkOrderEventTypes.All"/>, the one
+    /// hand-maintained list of published routing keys. This proves that list and the actual set of
+    /// <see cref="IntegrationEvent.EventType"/>s never drift: add an event and forget the list, and
+    /// the feed would silently miss it — so the drift is a red test, not a live surprise. The keys
+    /// are read off uninitialized instances because <c>EventType</c> returns a literal that never
+    /// touches the record's fields.
+    /// </summary>
+    [Fact]
+    public void Dashboard_routing_keys_match_every_published_event_type()
+    {
+        var published = typeof(IntegrationEvent).Assembly.GetTypes()
+            .Where(t => !t.IsAbstract && typeof(IntegrationEvent).IsAssignableFrom(t))
+            .Select(t => ((IntegrationEvent)System.Runtime.CompilerServices.RuntimeHelpers
+                .GetUninitializedObject(t)).EventType)
+            .ToHashSet();
+
+        Assert.Equal(published, WorkOrderEventTypes.All.ToHashSet());
+    }
+
     /// <summary>Serializes an event in its envelope exactly as the publisher does, and back.</summary>
     private static T RoundTrip<T>(T payload) where T : IntegrationEvent
     {

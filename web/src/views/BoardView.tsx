@@ -1,12 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { fetchWorkOrders } from "../api/client";
 import type { WorkOrderListItem, WorkOrderOrigin, WorkOrderStatus } from "../api/types";
+import { EventFeed } from "../components/EventFeed";
 import { OrderCard } from "../components/OrderCard";
 import { EXCEPTION_STAGES, PIPELINE_STAGES, type StageDef } from "../domain/stages";
-import { usePolledData } from "../hooks/usePolledData";
-
-const POLL_MS = 4000;
+import { useLiveData } from "../hooks/useLiveData";
+import { useReloadOnStream } from "../hooks/useReloadOnStream";
+import { useRealtime } from "../realtime/RealtimeProvider";
 
 type OriginFilter = "all" | WorkOrderOrigin;
 
@@ -18,41 +19,58 @@ const ORIGIN_FILTERS: { value: OriginFilter; label: string }[] = [
 
 export function BoardView() {
   const [originFilter, setOriginFilter] = useState<OriginFilter>("all");
+  const { noteOrigins } = useRealtime();
 
   const query = useMemo(
     () => (originFilter === "all" ? {} : { origin: [originFilter] }),
     [originFilter],
   );
 
-  const { data, error, loading, refreshing, refresh } = usePolledData<WorkOrderListItem[]>(
+  const { data, error, loading, refreshing, reload } = useLiveData<WorkOrderListItem[]>(
     (signal) => fetchWorkOrders(query, signal),
     [originFilter],
-    POLL_MS,
   );
+
+  // Live now, not polled: any factory event reloads the board (debounced), and a reconnect
+  // reconciles. Cards are keyed by id, so a status change moves one card between columns in place.
+  useReloadOnStream(reload, () => true);
+
+  // Teach the feed which orders are visitor vs robot, from whatever the board has loaded.
+  useEffect(() => {
+    if (data) noteOrigins(data);
+  }, [data, noteOrigins]);
 
   // A single clock for the whole render, so every card's relative time is consistent per tick.
   const now = Date.now();
 
   const byStatus = useMemo(() => groupByStatus(data ?? []), [data]);
 
-  if (loading) {
-    return <p className="notice">Loading the factory floor…</p>;
-  }
-  if (error) {
-    return (
-      <div className="notice notice-error">
-        <p>Couldn't reach the factory. Is the API running?</p>
-        <button type="button" onClick={refresh}>
-          Try again
-        </button>
-      </div>
-    );
-  }
-
   const orders = data ?? [];
 
   return (
-    <section className="board">
+    <div className="board-layout">
+      <section className="board">{renderBoard()}</section>
+      <EventFeed />
+    </div>
+  );
+
+  function renderBoard() {
+    if (loading) {
+      return <p className="notice">Loading the factory floor…</p>;
+    }
+    if (error) {
+      return (
+        <div className="notice notice-error">
+          <p>Couldn't reach the factory. Is the API running?</p>
+          <button type="button" onClick={reload}>
+            Try again
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <>
       <div className="board-toolbar">
         <div className="board-summary">
           <span className="board-count">{orders.length}</span>
@@ -72,7 +90,7 @@ export function BoardView() {
               </button>
             ))}
           </div>
-          <button type="button" className="refresh-button" onClick={refresh}>
+          <button type="button" className="refresh-button" onClick={reload}>
             ↻ Refresh
           </button>
         </div>
@@ -99,8 +117,9 @@ export function BoardView() {
           </div>
         </>
       )}
-    </section>
-  );
+      </>
+    );
+  }
 }
 
 function StageColumn({

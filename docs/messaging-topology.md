@@ -74,10 +74,11 @@ Each subscriber binds the exact routing keys it acts on, so **the outcome is the
 no consumer receives an event and then decides the event wasn't for it. That is the direct
 exchange earning its place.
 
-Two keys have no subscriber, both deliberately. `work-order.faulted` and
-`work-order.completed` are *announcements* for the dashboard (Epic 11): one is a recoverable
-state a human is expected to act on, the other is the terminal "and that's the end of it".
-Nothing in the pipeline acts on either.
+Two keys have no *pipeline* subscriber, both deliberately. `work-order.faulted` and
+`work-order.completed` are *announcements*: one is a recoverable state a human is expected to act
+on, the other is the terminal "and that's the end of it". Nothing in the pipeline acts on either.
+Since 11.2 they do have **one** reader — the dashboard relay below — which was always their point:
+they were left orphaned through Epics 7–8 so the Epic 11 feed would be their first subscriber.
 
 ### `work-order.inspection-passed` has two publishers
 
@@ -128,6 +129,7 @@ so whichever service starts first declares it; the declaration is idempotent.
 | `artifice.retry.30s.queue` | yes | `artifice.retry.30s` (fanout) | *(none — TTL 30s)* |
 | `artifice.retry.2m.queue` | yes | `artifice.retry.2m` (fanout) | *(none — TTL 2m)* |
 | `artifice.parked` | yes | *(default exchange, by name)* | `ParkedQueueDrain` — writes `dead_letters` rows and nothing else |
+| `artifice.dashboard` | **no** (auto-delete, `x-message-ttl`) | `artifice.events`, one binding per **published** event type — the full `WorkOrderEventTypes.All` set, including `created`, `faulted`, `completed` | `DashboardRelay` (API) — relays each event to browsers over SignalR (11.2) |
 
 ### The full event set
 
@@ -140,8 +142,8 @@ so whichever service starts first declares it; the declaration is idempotent.
 | `work-order.rework-required` | worker (inspection) | production | Rebuild the shortfall as attempt N+1 |
 | `work-order.inspection-passed` | worker (inspection) **and API (on release, 7.3)** | shipping | Full ordered quantity passed; book a carrier |
 | `work-order.shipment-scheduled` | worker (shipping) | dispatch | A carrier accepted; hand the parcel over |
-| `work-order.completed` | worker (dispatch) | *(Epic 11: dashboard)* | Parcel dispatched, order closed — the last event in the chain |
-| `work-order.faulted` | worker (inspection) | *(Epic 11: dashboard)* | Rebuild cap exceeded; the cycle has stopped |
+| `work-order.completed` | worker (dispatch) | **dashboard relay** (11.2) | Parcel dispatched, order closed — the last event in the chain |
+| `work-order.faulted` | worker (inspection) | **dashboard relay** (11.2) | Rebuild cap exceeded; the cycle has stopped |
 
 The worker owns a single durable queue. On startup it declares the queue and then binds it
 to `artifice.events` **once per handled event type** — the set of bindings is derived from
@@ -311,6 +313,50 @@ within one refresh interval, and the response says so — because the worker is 
 actually fail and a broadcast or a query-per-decision would both be worse than a few seconds' lag on
 a demo dial. Seeds stay in configuration deliberately: a reproducible verdict sequence is a test
 affordance, not a dial.
+
+## The dashboard relay (Epic 11)
+
+The API grows a **second, non-competing consumer** of `artifice.events` so the demo dashboard can
+be watched rather than refreshed. It is a plain fan-out: the worker's durable `artifice.workers`
+queue drives the pipeline, the API's `artifice.dashboard` queue *observes* it, and because they are
+two separate queues on one exchange neither can starve the other — the dashboard's consumption never
+removes a message from the worker's queue.
+
+```mermaid
+flowchart LR
+    disp["OutboxDispatcher (any host)"] -->|publish| ex{{"artifice.events<br/>direct, durable"}}
+    ex -->|"work-order.* (each key)"| wq[["artifice.workers<br/>durable — the pipeline"]]
+    ex -->|"work-order.* (each key)"| dq[["artifice.dashboard<br/>auto-delete, TTL — the feed"]]
+    wq --> worker["Workers — unchanged"]
+    dq --> relay["DashboardRelay (API)<br/>ack-always, never retries"]
+    relay --> hub["SignalR hub /hubs/dashboard"]
+    hub -->|"DashboardEvent pushed"| browsers["Board · Detail · Event feed"]
+```
+
+Four properties define it, each the deliberate opposite of a pipeline stage:
+
+- **It binds every *published* key, not every *handled* one.** The worker queue's bindings are its
+  handler set; the dashboard queue's are `WorkOrderEventTypes.All` — the one enumerated inventory of
+  what the factory announces, `created`/`faulted`/`completed` included. A direct exchange has no
+  `work-order.*` wildcard, so the set is named explicitly; a unit test asserts it never drifts from
+  the actual event types.
+- **It always acks.** A relay that failed to broadcast lost a *screen update*, not a unit of work.
+  It never touches the retry ladder and never parks: a throw is logged and the message is acked. The
+  outbox/worker path is the durable one, and the feed is allowed to miss a frame.
+- **Its queue is auto-delete with an `x-message-ttl`.** The feed is live traffic, not history. A
+  downed dashboard must not hoard a reconnect flood, and the queue should vanish with the process —
+  the exact opposite of the worker queue's durability, on purpose. History lives in `dead_letters`
+  and the traces.
+- **It reads, it does not write.** No `DbContext`, no outbox, no state change. It deserializes just
+  the envelope metadata plus the payload's `workOrderId` — enough to relay a `DashboardEvent` the
+  board can pin to one card and the feed can render a line from, with no second fetch.
+
+It lives in the API, not the workers, because the hub lives where the browser connects and the API
+already owns a broker connection (its `OutboxDispatcher`); a hub in the workers would need a SignalR
+backplane to reach the API's clients. The relay retries its initial connect rather than crashing the
+API if the broker is briefly down at startup — a dark feed beats a dead site — and one fixed-name
+queue assumes the single-instance demo (a scaled deployment would give each instance its own queue
+and a backplane). See [`DashboardRelay`](../src/ArtificeWorks.Api/Realtime/DashboardRelay.cs).
 
 ## Dead letters and replay
 
@@ -545,6 +591,7 @@ away.
 - The wire: [`RabbitMqRawPublisher`](../src/ArtificeWorks.Infrastructure/Messaging/RabbitMqRawPublisher.cs), [`RabbitMqEventPublisher`](../src/ArtificeWorks.Infrastructure/Messaging/RabbitMqEventPublisher.cs)
 - Consumer, retry ladder + queue/bindings: [`RabbitMqConsumerService`](../src/ArtificeWorks.Workers/Consuming/RabbitMqConsumerService.cs), [`RetryConfiguration`](../src/ArtificeWorks.Infrastructure/Messaging/RetryConfiguration.cs), [`EventDispatcher`](../src/ArtificeWorks.Workers/Consuming/EventDispatcher.cs)
 - Dead letters: [`ParkedQueueDrain`](../src/ArtificeWorks.Workers/Consuming/ParkedQueueDrain.cs), [`DeadLetterService`](../src/ArtificeWorks.Application/Recovery/DeadLetterService.cs), [`DeadLetterController`](../src/ArtificeWorks.Api/Controllers/DeadLetterController.cs)
+- Dashboard relay + hub (Epic 11): [`DashboardRelay`](../src/ArtificeWorks.Api/Realtime/DashboardRelay.cs), [`DashboardHub`](../src/ArtificeWorks.Api/Realtime/DashboardHub.cs), [`WorkOrderEventTypes`](../src/ArtificeWorks.Application/Messaging/WorkOrderEventTypes.cs)
 - Pacing + dials (Epic 10): [`PaceConfiguration`](../src/ArtificeWorks.Infrastructure/Messaging/PaceConfiguration.cs), [`PacePolicy`](../src/ArtificeWorks.Infrastructure/Messaging/PacePolicy.cs), [`BrokerTopology`](../src/ArtificeWorks.Infrastructure/Messaging/BrokerTopology.cs), [`SimulationSettings`](../src/ArtificeWorks.Application/Simulation/SimulationSettings.cs), [`SimulationController`](../src/ArtificeWorks.Api/Controllers/SimulationController.cs), [`WorldResetService`](../src/ArtificeWorks.Application/Simulation/WorldResetService.cs)
 - Simulation host: [`ArtificeWorks.Simulation`](../src/ArtificeWorks.Simulation/Program.cs), [`OrderGenerator`](../src/ArtificeWorks.Simulation/Tasks/OrderGenerator.cs), [`PeriodicTaskHost`](../src/ArtificeWorks.Infrastructure/Scheduling/PeriodicTaskHost.cs)
 - API idempotency: [`IdempotencyFilter`](../src/ArtificeWorks.Api/Middleware/IdempotencyFilter.cs)

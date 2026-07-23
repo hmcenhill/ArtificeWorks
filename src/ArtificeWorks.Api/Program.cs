@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using ArtificeWorks.Api.Configuration;
 using ArtificeWorks.Api.Errors;
 using ArtificeWorks.Api.Middleware;
+using ArtificeWorks.Api.Realtime;
 using ArtificeWorks.Application.Handlers;
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Observability;
@@ -47,6 +48,15 @@ builder.Services.AddOutboxDispatcher();
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+
+// Realtime (11.2). SignalR is the transport the DTO docstrings have named since Epic 4. The relay
+// is a read-only, non-competing consumer of artifice.events on its own artifice.dashboard queue —
+// it turns the board, the detail and the new event feed from polling into pushing, and it is where
+// work-order.faulted/completed finally get a subscriber. It lives in the API because that is where
+// browsers connect and the API already owns a broker connection (its OutboxDispatcher above).
+builder.Services.AddSignalR();
+builder.Services.AddSingleton<IDashboardBroadcaster, HubDashboardBroadcaster>();
+builder.Services.AddHostedService<DashboardRelay>();
 
 // Real probes (9.4), replacing the unconditional "Healthy" that has shipped since Epic 1 — which
 // reported fine with Postgres down, and which M7 will point an orchestrator at.
@@ -164,6 +174,10 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 
 app.MapControllers();
+
+// The dashboard's realtime endpoint (11.2). SignalR negotiates over HTTP then upgrades to a
+// websocket; the dev proxy passes /hubs through with ws:true so the upgrade survives.
+app.MapHub<DashboardHub>(DashboardHub.Route);
 
 // Liveness and readiness are separate, and liveness checks NOTHING (9.4). The classic mistake is
 // one endpoint checking dependencies: the database blips, every replica reports unhealthy, the

@@ -1,5 +1,7 @@
 import { Link, Outlet } from "react-router-dom";
 
+import { ConnectionStatus } from "./components/ConnectionStatus";
+
 /** The shell every view renders inside: a header that links home, and the routed content. */
 export function AppLayout() {
   return (
@@ -14,6 +16,7 @@ export function AppLayout() {
             <span className="app-brand-sub">Factory Floor</span>
           </span>
         </Link>
+        <ConnectionStatus />
       </header>
       <main className="app-main">
         <Outlet />

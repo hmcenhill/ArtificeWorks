@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
+using ArtificeWorks.Api.Realtime;
 using ArtificeWorks.Application.Shipping;
 using ArtificeWorks.Infrastructure.Messaging.Outbox;
 using ArtificeWorks.Infrastructure.Persistence;
@@ -58,11 +59,13 @@ public class ApiFixture : IAsyncLifetime
                     // assert on `outbox_messages` — the point of the story is that the event is
                     // part of the same transaction as the work, and a no-op here would hide
                     // exactly that. What does need a broker is the dispatcher, so its two hosted
-                    // services come out instead.
+                    // services come out instead — along with the dashboard relay (11.2), which
+                    // consumes from the broker and has no bearing on these API-surface tests.
                     foreach (var hosted in services
                                  .Where(d => d.ServiceType == typeof(IHostedService)
                                      && (d.ImplementationType == typeof(OutboxDispatcher)
-                                         || d.ImplementationType == typeof(RetentionSweepService)))
+                                         || d.ImplementationType == typeof(RetentionSweepService)
+                                         || d.ImplementationType == typeof(DashboardRelay)))
                                  .ToList())
                     {
                         services.Remove(hosted);
