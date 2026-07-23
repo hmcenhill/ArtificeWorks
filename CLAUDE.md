@@ -8,6 +8,9 @@ Event-driven manufacturing management system for a fictional automata factory (H
 
 - Claude writes most of the code; the user directs, reviews, and must always be able to follow what's happening. Explain design decisions and tradeoffs as you go — flag problems, don't silently fix them.
 - Work story-by-story from `docs/Plan/`. Stories are groomed just-in-time: epic files exist for everything, story files only for the active epic(s).
+- **Grooming output** — when grooming an epic into stories, end with an *implementation plan* the user can kick a run off from:
+  - **Recommended batching for implementation runs:** whether to do the whole epic in one pass, a group of stories, or a single story on its own (choose single when a story is large or high-risk). Size each batch as a coherent unit of work with a natural check-in point — the user often starts a big run and checks in occasionally, so each run should reach a reviewable, demoable stopping point.
+  - **Where a subagent helps, per batch:** call out any broad "find every X / how does Y wire up" sweep that should go to an `Explore` (or other) subagent, so the searching cost stays out of the implementing conversation's context. Also list the handful of files + docs each batch will load, so the run starts from a known small working set instead of re-exploring.
 - Pipeline-first principle: don't deepen the domain ahead of the async backbone. Keep the system demoable at every milestone.
 - **The user handles all source control** (staging, committing, pushing). Claude does not run `git add`/`commit`/`push` — leave changes in the working tree for the user to review and commit. At the end of a story or epic (whenever a commit seems appropriate), draft a commit message for the user without committing.
 - **Before ending a conversation that changed anything: update [HANDOFF.md](HANDOFF.md)** (see the protocol note at its top) so it can be committed alongside the work.
@@ -31,3 +34,8 @@ Clean architecture, .NET 10:
 - Observability: [docs/observability.md](docs/observability.md) — the runbook. Read it before adding a log line, metric or span.
 - EF migration commands: see [Notes.md](Notes.md)
 - CI: GitHub Actions on push/PR to main (build + tests)
+
+## Working with migrations
+
+- The generated EF files — every `*.Designer.cs` and `ArtificeWorksDbContextModelSnapshot.cs` — are machine output. **Don't Read or Grep them**; they're ~1.5k lines of noise. The hand-authored `<timestamp>_<Name>.cs` migration body (the `Up`/`Down` DDL) is the reviewable part; the `DbContext` configuration is the authoritative source of schema intent.
+- There is **no production data**, so migrations are squashed into a single `InitialCreate` periodically rather than accumulated. Per-migration history is not preserved across a squash (git commits record it). Recreating the local DB (`docker compose down -v && docker compose up -d`, then EF update) is cheap and expected.

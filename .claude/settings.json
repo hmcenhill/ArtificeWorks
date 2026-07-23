@@ -70,7 +70,9 @@
       "Bash(grep -oE '\"Category\":\"[^\"]*\",\"Message\":\"[^\"]{0,110}')",
       "Bash(cd \"c:/Users/hmcen/source/repos/ArtificeWorks\" && dotnet test --nologo --logger \"console;verbosity=detailed\" 2>&1 > /tmp/f4.log; echo \"=== stack ===\"; grep -A 8 \"Error Message\" /tmp/f4.log | head -12; echo \"=== TRACE-E2E lines ===\"; grep -o '\"Message\":\"[^\"]\\\\{0,110\\\\}' /tmp/f4.log | grep -iE \"TRACE|test request\" | head)",
       "Bash(cd \"c:/Users/hmcen/source/repos/ArtificeWorks\" && sed -n '378,382p' tests/ArtificeWorks.IntegrationTests/WorkerConsumerTests.cs; echo \"=== does traced order complete? search full4 for its workorder ===\"; grep -oE '\"Message\":\"Work order [a-f0-9-]+ completed|\"Message\":\"Reserved [0-9]+ component line\\\\\\(s\\\\\\) for work order [a-f0-9-]+: [0-9]+.CMP-TRACE' /tmp/f4.log | head; echo \"=== count of pipeline completions in full run ===\"; grep -c \"dispatched with\" /tmp/f4.log)",
-      "Bash(grep -oE '\"LogLevel\":\"\\(Warning|Error\\)\",\"Category\":\"[^\"]*\",\"Message\":\"[^\"]{0,160}' /tmp/pw2.log)"
+      "Bash(grep -oE '\"LogLevel\":\"\\(Warning|Error\\)\",\"Category\":\"[^\"]*\",\"Message\":\"[^\"]{0,160}' /tmp/pw2.log)",
+      "Bash(xargs wc -l)",
+      "Bash(grep -v -E '^\\(id|name|.*_id\\)$')"
     ]
   }
 }

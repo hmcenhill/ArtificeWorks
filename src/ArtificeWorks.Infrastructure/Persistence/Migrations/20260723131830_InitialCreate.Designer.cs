@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ArtificeWorks.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(ArtificeWorksDbContext))]
-    [Migration("20260722164324_Observability")]
-    partial class Observability
+    [Migration("20260723131830_InitialCreate")]
+    partial class InitialCreate
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -63,6 +63,10 @@ namespace ArtificeWorks.Infrastructure.Persistence.Migrations
                     b.Property<long>("OnHand")
                         .HasColumnType("bigint")
                         .HasColumnName("on_hand");
+
+                    b.Property<long>("SeedOnHand")
+                        .HasColumnType("bigint")
+                        .HasColumnName("seed_on_hand");
 
                     b.HasKey("ComponentId");
 
@@ -293,6 +297,11 @@ namespace ArtificeWorks.Infrastructure.Persistence.Migrations
                     b.Property<long>("OrderItemQty")
                         .HasColumnType("bigint");
 
+                    b.Property<string>("Origin")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
                     b.Property<string>("PreviousStatus")
                         .HasColumnType("text");
 
@@ -310,6 +319,8 @@ namespace ArtificeWorks.Infrastructure.Persistence.Migrations
                         .HasColumnName("xmin");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("Origin");
 
                     b.HasIndex("ordered_item_id");
 
@@ -491,6 +502,81 @@ namespace ArtificeWorks.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("idempotency_keys", (string)null);
+                });
+
+            modelBuilder.Entity("ArtificeWorks.Infrastructure.Persistence.SimulationSettingsRow", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("AutoBook")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("AutoInspect")
+                        .HasColumnType("boolean");
+
+                    b.Property<double>("FailureRate")
+                        .HasColumnType("double precision");
+
+                    b.Property<bool>("GenerationEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<int>("GenerationIntervalSeconds")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("MaxInFlight")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("MaxRebuildAttempts")
+                        .HasColumnType("integer");
+
+                    b.Property<double>("PaceJitter")
+                        .HasColumnType("double precision");
+
+                    b.Property<double>("PaceSecondsInspectionPassed")
+                        .HasColumnType("double precision");
+
+                    b.Property<double>("PaceSecondsMaterialsReserved")
+                        .HasColumnType("double precision");
+
+                    b.Property<double>("PaceSecondsProductionCompleted")
+                        .HasColumnType("double precision");
+
+                    b.Property<double>("PaceSecondsReworkRequired")
+                        .HasColumnType("double precision");
+
+                    b.Property<double>("PaceSecondsScheduled")
+                        .HasColumnType("double precision");
+
+                    b.Property<double>("PaceSecondsShipmentScheduled")
+                        .HasColumnType("double precision");
+
+                    b.Property<bool>("PacingEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<double>("RefusalRate")
+                        .HasColumnType("double precision");
+
+                    b.Property<int>("RetireAfterHours")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("UpdatedBy")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("WorldSweepIntervalHours")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("simulation_settings", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_simulation_settings_singleton", "\"Id\" = 1");
+                        });
                 });
 
             modelBuilder.Entity("ArtificeWorks.Domain.Models.Materials.BomLine", b =>

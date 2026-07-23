@@ -17,6 +17,7 @@ A demo that only runs on localhost isn't a demo. Self-hosting is also its own re
 - Safe exposure: reverse proxy, TLS, and no direct exposure of home network internals (consider a tunnel, e.g., Cloudflare Tunnel)
 - Public-facing hardening: rate limiting, request size limits, admin/chaos endpoints gated
 - Shared-world reset job scheduled (nightly) and triggerable manually
+- Deterministic **interview/demo seed**: a script (or command) that resets the DB to a fixed, known starting state — a set of orders at known stages, stable ids — so a live walkthrough has no surprises. Builds on `CatalogSeeder` and `WorldResetService`; distinct from the shared-world reset (which restocks + retires, but does not create a curated scenario).
 - Basic uptime monitoring/alerting so a dead demo doesn't sit unnoticed
 - Website embedding: the dashboard reachable from (or framed in) the personal site
 
@@ -26,6 +27,7 @@ A demo that only runs on localhost isn't a demo. Self-hosting is also its own re
 - [ ] The demo is reachable over HTTPS from the public internet
 - [ ] Abusive traffic is rate-limited; admin surfaces are not publicly writable
 - [ ] The world resets on schedule without manual intervention
+- [ ] A single command resets the demo to a known, curated starting state for a walkthrough
 - [ ] You find out within minutes if the demo goes down
 
 ## Notes
