@@ -21,14 +21,23 @@ public sealed record SystemStatsDto(
     IReadOnlyDictionary<string, long> WorkOrdersByStatus,
     long WorkOrdersTotal,
     long WorkOrdersInFlight,
+    // 10.3. Split so the dashboard can draw real demand and simulated demand as separate lines
+    // rather than one indistinguishable total — without which this endpoint reports robot traffic
+    // as throughput.
+    IReadOnlyDictionary<string, long> WorkOrdersByOrigin,
+    IReadOnlyDictionary<string, long> WorkOrdersInFlightByOrigin,
     long OutboxUnsent,
     double OutboxLagSeconds,
     long DeadLettersUnreplayed,
+    // 10.4. 1.0 is a full factory; watching it fall and snap back is the world sweep made visible.
+    double StockLevelRatio,
     long MessagesHandledSinceStart,
     long MessagesRetriedSinceStart,
     long MessagesParkedSinceStart,
     long MessagesReplayedSinceStart,
-    long OutboxPublishedSinceStart)
+    long MessagesPacedSinceStart,
+    long OutboxPublishedSinceStart,
+    long OrdersRetiredSinceStart)
 {
     public static SystemStatsDto From(PipelineSnapshot snapshot, ArtificeWorksMetrics metrics) => new(
         snapshot.CapturedUtc,
@@ -36,12 +45,17 @@ public sealed record SystemStatsDto(
         snapshot.WorkOrdersByStatus,
         snapshot.TotalWorkOrders,
         snapshot.InFlight,
+        snapshot.WorkOrdersByOrigin,
+        snapshot.InFlightByOrigin,
         snapshot.UnsentOutboxRows,
         snapshot.OutboxLagSeconds,
         snapshot.UnreplayedDeadLetters,
+        snapshot.StockLevelRatio,
         metrics.MessagesHandledSinceStart,
         metrics.MessagesRetriedSinceStart,
         metrics.MessagesParkedSinceStart,
         metrics.MessagesReplayedSinceStart,
-        metrics.OutboxPublishedSinceStart);
+        metrics.MessagesPacedSinceStart,
+        metrics.OutboxPublishedSinceStart,
+        metrics.OrdersRetiredSinceStart);
 }

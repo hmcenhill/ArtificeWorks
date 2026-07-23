@@ -38,6 +38,7 @@ namespace ArtificeWorks.IntegrationTests;
 /// the shape Epic 12's failure injection will take.
 /// </para>
 /// </summary>
+[Collection(BrokerTestCollection.Name)]
 public class DeadLetterTests : IAsyncLifetime
 {
     private const string Exchange = "artifice.events";

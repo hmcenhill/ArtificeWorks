@@ -76,6 +76,30 @@ services:
       - ./docker/grafana/provisioning:/otel-lgtm/grafana/conf/provisioning/dashboards:ro
       - ./docker/grafana/dashboards:/otel-lgtm/grafana/dashboards:ro
 
+  # Epic 10. The simulation host: a third deployment unit that publishes and schedules but
+  # consumes nothing. It creates orders over the API's front door and runs the world sweep against
+  # Postgres — deliberately separate from the workers so the factory can be paced and fed without
+  # the consumers being able to slow down, and so it can be stopped without stopping production.
+  #
+  # Commented out until an image is built for it (M7). Uncomment once `docker build` targets the
+  # simulation Dockerfile; for local runs, `dotnet run --project src/ArtificeWorks.Simulation` is
+  # the equivalent. Generation and pacing ship OFF — turn them on at PUT /system/simulation, or via
+  # the simulation host's appsettings.Development.json, which enables both.
+  #
+  # simulation:
+  #   build:
+  #     context: .
+  #     dockerfile: src/ArtificeWorks.Simulation/Dockerfile
+  #   container_name: artificeworks-simulation
+  #   restart: unless-stopped
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   environment:
+  #     ConnectionStrings__ArtificeWorksDatabase: "Host=postgres;Port=5432;Database=artificeworks;Username=postgres;Password=postgres"
+  #     Simulation__ApiBaseAddress: "http://api:8080"
+  #     Telemetry__OtlpEndpoint: "http://otel-lgtm:4317"
+
 volumes:
   postgres_data:
   rabbitmq_data:

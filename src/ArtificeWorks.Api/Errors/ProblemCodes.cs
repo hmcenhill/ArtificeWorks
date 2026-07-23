@@ -60,6 +60,14 @@ public static class ProblemCodes
     /// </summary>
     public const string IdempotencyKeyInFlight = "idempotency_key_in_flight";
 
+    /// <summary>
+    /// A simulation dial was set outside its band (10.2) — a rate above 1.0, a pacing duration
+    /// measured in hours, a negative interval. <em>422</em> rather than 400 for the same reason
+    /// <see cref="IdempotencyKeyReused"/> is: the request is well-formed and understood, it just
+    /// asks for something the factory will not do.
+    /// </summary>
+    public const string SimulationSettingOutOfRange = "simulation_setting_out_of_range";
+
     /// <summary>Maps a domain transition-rejection code onto its wire reason code.</summary>
     public static string ForTransition(TransitionErrorCode code) => code switch
     {

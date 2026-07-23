@@ -22,6 +22,14 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\ArtificeWorks.Application\ArtificeWorks.Application.csproj" />
+    <!--
+      Added at 10.1. Two things this epic introduced are pure logic that happens to live in
+      Infrastructure: the pace ladder's arithmetic (which rung does 4.6 seconds land on?) and
+      PeriodicTaskHost's loop rules (a throwing task must not stop running). Both are unit-level,
+      and pushing them into the integration project would make them need Docker to answer a
+      question about a `switch` and a `Task.Delay`.
+    -->
+    <ProjectReference Include="..\..\src\ArtificeWorks.Infrastructure\ArtificeWorks.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

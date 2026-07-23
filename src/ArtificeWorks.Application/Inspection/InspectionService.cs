@@ -5,6 +5,7 @@ using System.Diagnostics;
 using ArtificeWorks.Application.Messaging.Events;
 using ArtificeWorks.Application.Observability;
 using ArtificeWorks.Application.Production;
+using ArtificeWorks.Application.Simulation;
 using ArtificeWorks.Domain.Models;
 using ArtificeWorks.Domain.Models.Materials;
 using ArtificeWorks.Domain.Models.Production;
@@ -40,9 +41,15 @@ public sealed class InspectionService
     private readonly IEventPublisher _eventPublisher;
     private readonly InspectionConfiguration _inspectionConfig;
     private readonly ProductionConfiguration _productionConfig;
+    private readonly SimulationSettingsCache? _settings;
     private readonly ArtificeWorksMetrics _metrics;
     private readonly ILogger<InspectionService> _logger;
 
+    /// <param name="settings">
+    /// 10.2's live dials, supplying <c>AutoInspect</c> and the rebuild cap so both can be changed
+    /// on a running factory. Null (a unit test) falls back to the startup configuration, which is
+    /// also what the cache holds before its first refresh.
+    /// </param>
     public InspectionService(
         IWorkOrderRepository workOrderRepository,
         IInspectionRunRepository runRepository,
@@ -51,7 +58,8 @@ public sealed class InspectionService
         InspectionConfiguration inspectionConfig,
         ProductionConfiguration productionConfig,
         ArtificeWorksMetrics metrics,
-        ILogger<InspectionService> logger)
+        ILogger<InspectionService> logger,
+        SimulationSettingsCache? settings = null)
     {
         _metrics = metrics;
         _workOrderRepository = workOrderRepository;
@@ -60,8 +68,13 @@ public sealed class InspectionService
         _eventPublisher = eventPublisher;
         _inspectionConfig = inspectionConfig;
         _productionConfig = productionConfig;
+        _settings = settings;
         _logger = logger;
     }
+
+    private bool AutoInspect => _settings?.Current.AutoInspect ?? _inspectionConfig.AutoInspect;
+
+    private int MaxRebuildAttempts => _settings?.Current.MaxRebuildAttempts ?? _productionConfig.MaxRebuildAttempts;
 
     // ------------------------------------------------------------------ the consumer path
 
@@ -116,7 +129,7 @@ public sealed class InspectionService
         var run = new InspectionRun(workOrderId, attemptNumber);
         uint passed = 0, scrapped = 0;
 
-        if (_inspectionConfig.AutoInspect)
+        if (AutoInspect)
         {
             foreach (var unit in workOrder.UnitsAwaitingInspection(attemptNumber))
             {
@@ -165,7 +178,7 @@ public sealed class InspectionService
         }
 
         _metrics.Verdicts(passed, scrapped);
-        RecordTransitions(transitions, resolution);
+        RecordTransitions(transitions, resolution, workOrder.Origin.ToString());
 
         _logger.LogInformation(
             "Work order {WorkOrderId} attempt {Attempt}: {Passed} passed, {Scrapped} scrapped — {Outcome}.",
@@ -249,7 +262,7 @@ public sealed class InspectionService
         // One unit, one verdict — the same instruments the automatic path uses, so a factory run
         // by a visitor and one run unattended produce identical metrics as well as identical state.
         _metrics.Verdicts(passed ? 1 : 0, passed ? 0 : 1);
-        RecordTransitions([], resolution);
+        RecordTransitions([], resolution, workOrder.Origin.ToString());
 
         _logger.LogInformation(
             "Manual verdict by {RecordedBy} on unit {Serial} of work order {WorkOrderId}: {Summary} — {Outcome}.",
@@ -269,16 +282,17 @@ public sealed class InspectionService
         InspectionOutcome Outcome, string Summary, string? From = null, string? To = null);
 
     /// <summary>Flushes the transitions a committed inspection actually performed. One count each, once.</summary>
-    private void RecordTransitions(List<(string From, string To)> transitions, Resolution resolution)
+    private void RecordTransitions(
+        List<(string From, string To)> transitions, Resolution resolution, string origin)
     {
         foreach (var (from, to) in transitions)
         {
-            _metrics.Transition(from, to);
+            _metrics.Transition(from, to, origin);
         }
 
         if (resolution is { From: not null, To: not null })
         {
-            _metrics.Transition(resolution.From, resolution.To);
+            _metrics.Transition(resolution.From, resolution.To, origin);
         }
     }
 
@@ -317,10 +331,10 @@ public sealed class InspectionService
 
         // Short, and every unit has been judged. The rebuild that would follow attempt N is
         // rebuild number N, so the cap is exceeded exactly when the attempt count passes it.
-        if (workOrder.BuildAttempt > _productionConfig.MaxRebuildAttempts)
+        if (workOrder.BuildAttempt > MaxRebuildAttempts)
         {
             var reason = ProductionService.Truncate(
-                $"Rebuild cap of {_productionConfig.MaxRebuildAttempts} exceeded after {workOrder.BuildAttempt} " +
+                $"Rebuild cap of {MaxRebuildAttempts} exceeded after {workOrder.BuildAttempt} " +
                 $"attempt(s); {workOrder.PassedQty} of {workOrder.OrderItemQty} unit(s) passed. " +
                 $"Scrapped: {DescribeScrapped(workOrder)}.");
 

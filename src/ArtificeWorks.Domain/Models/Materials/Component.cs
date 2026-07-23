@@ -20,6 +20,18 @@ public class Component
     /// <summary>Units physically on the shelf and not yet consumed by a reservation.</summary>
     public uint OnHand { get; private set; }
 
+    /// <summary>
+    /// How much of this component the factory starts with — the level 10.4's world sweep restocks
+    /// to.
+    /// <para>
+    /// <strong>Seed levels became data rather than staying in the seeder's arrays</strong> because
+    /// restock needs a target, and re-deriving it at runtime from a static field on a class whose
+    /// job is first-run setup couples a background sweep to <c>CatalogSeeder</c>. Written once at
+    /// creation; there is then exactly one definition of "how much this factory starts with".
+    /// </para>
+    /// </summary>
+    public uint SeedOnHand { get; private set; }
+
     private Component() { }
 
     public Component(string componentId, string componentName, uint onHand = 0)
@@ -32,6 +44,7 @@ public class Component
         ComponentId = componentId;
         ComponentName = componentName;
         OnHand = onHand;
+        SeedOnHand = onHand;
     }
 
     /// <summary>

@@ -1,3 +1,5 @@
+using ArtificeWorks.Application.Simulation;
+
 namespace ArtificeWorks.Application.Shipping;
 
 /// <summary>
@@ -14,16 +16,25 @@ namespace ArtificeWorks.Application.Shipping;
 public sealed class ConfiguredCarrierBooking : ICarrierBooking
 {
     private readonly ShippingConfiguration _config;
+    private readonly SimulationSettingsCache? _settings;
     private readonly IReadOnlyList<string> _carriers;
     private readonly Random _random;
     private readonly Lock _gate = new();
 
-    public ConfiguredCarrierBooking(ShippingConfiguration config)
+    /// <param name="settings">
+    /// 10.2's live dials. The refusal rate comes from here so it can be turned up on a running
+    /// factory; the carrier list, the transit days and the seed stay in configuration — they are
+    /// the world's shape, not a demo button. Null (a unit test) falls back to configuration.
+    /// </param>
+    public ConfiguredCarrierBooking(ShippingConfiguration config, SimulationSettingsCache? settings = null)
     {
         _config = config;
+        _settings = settings;
         _carriers = config.Carriers.Count > 0 ? config.Carriers : ShippingConfiguration.DefaultCarriers;
         _random = config.Seed is int seed ? new Random(seed) : new Random();
     }
+
+    private double RefusalRate => _settings?.Current.RefusalRate ?? _config.RefusalRate;
 
     public CarrierBookingResult Book(CarrierBookingRequest request)
     {
@@ -68,7 +79,9 @@ public sealed class ConfiguredCarrierBooking : ICarrierBooking
 
     private bool Refuses()
     {
-        if (_config.RefusalRate <= 0)
+        var refusalRate = RefusalRate;
+
+        if (refusalRate <= 0)
         {
             // The default. Short-circuited so an unattended factory doesn't burn entropy, and so
             // "RefusalRate 0 means every booking is accepted" is true by construction rather
@@ -78,7 +91,7 @@ public sealed class ConfiguredCarrierBooking : ICarrierBooking
 
         lock (_gate)
         {
-            return _random.NextDouble() < _config.RefusalRate;
+            return _random.NextDouble() < refusalRate;
         }
     }
 

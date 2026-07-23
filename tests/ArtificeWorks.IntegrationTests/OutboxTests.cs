@@ -3,6 +3,7 @@ using System.Text.Json;
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Messaging;
 using ArtificeWorks.Application.Messaging.Events;
+using ArtificeWorks.Application.Simulation;
 using ArtificeWorks.Domain.Models;
 using ArtificeWorks.Domain.Models.Materials;
 using ArtificeWorks.Infrastructure.Messaging.Outbox;
@@ -253,6 +254,85 @@ public class OutboxTests : IClassFixture<OutboxFixture>
         await using var verify = _fixture.NewContext();
         var stored = await verify.WorkOrders.AsNoTracking().SingleAsync(wo => wo.Id == workOrderId);
         Assert.Equal(WorkOrderStatus.Scheduled, stored.CurrentStatus);
+    }
+
+    // ------------------------------------------------------------------ pacing (10.1)
+
+    /// <summary>
+    /// Pacing off — the shipped default — has to leave the dispatcher's behaviour byte-for-byte
+    /// what 8.1 shipped: straight to <c>artifice.events</c>, no delay recorded, no rung involved.
+    /// </summary>
+    [Fact]
+    public async Task With_pacing_off_the_dispatcher_publishes_straight_to_the_events_exchange()
+    {
+        _fixture.Settings.Update(new SimulationSettings { PacingEnabled = false });
+
+        var correlationId = Guid.NewGuid();
+        await Enqueue(correlationId, "work-order.scheduled");
+        await _fixture.NewDispatcher().DispatchBatchAsync(CancellationToken.None);
+
+        var published = Assert.Single(_fixture.Broker.Published.Where(m => m.CorrelationId == correlationId));
+
+        Assert.Equal(ScriptableBrokerPublisher.EventsExchange, published.Exchange);
+        Assert.Null(published.PacedMs);
+    }
+
+    /// <summary>
+    /// The story's structural claim: pacing is applied in <em>one place</em>, the dispatcher, and it
+    /// routes to a rung's exchange while leaving the routing key alone — because the routing key is
+    /// what says what the message is, and it has to survive the dead-lettering back.
+    /// </summary>
+    [Fact]
+    public async Task With_pacing_on_a_staged_event_goes_to_its_rung_with_the_routing_key_untouched()
+    {
+        _fixture.Settings.Update(new SimulationSettings { PacingEnabled = true, PaceJitter = 0 });
+
+        try
+        {
+            var correlationId = Guid.NewGuid();
+            await Enqueue(correlationId, "work-order.materials-reserved");
+            await _fixture.NewDispatcher().DispatchBatchAsync(CancellationToken.None);
+
+            var published = Assert.Single(_fixture.Broker.Published.Where(m => m.CorrelationId == correlationId));
+
+            Assert.Equal("artifice.pace.13s", published.Exchange);
+            Assert.Equal("work-order.materials-reserved", published.RoutingKey);
+
+            // The delay it will actually take, for the producer span's artificeworks.paced_ms tag —
+            // the thing that makes the gap in the Tempo waterfall self-explanatory.
+            Assert.Equal(13_000, published.PacedMs);
+        }
+        finally
+        {
+            _fixture.Settings.Update(new SimulationSettings { PacingEnabled = false });
+        }
+    }
+
+    /// <summary>
+    /// An announcement is not a hand-off: nothing is waiting to do work because of it, so pacing it
+    /// would delay the news rather than the work. On with everything else paced,
+    /// <c>work-order.completed</c> still goes straight out.
+    /// </summary>
+    [Fact]
+    public async Task An_announcement_is_not_paced_even_when_pacing_is_on()
+    {
+        _fixture.Settings.Update(new SimulationSettings { PacingEnabled = true });
+
+        try
+        {
+            var correlationId = Guid.NewGuid();
+            await Enqueue(correlationId, "work-order.completed");
+            await _fixture.NewDispatcher().DispatchBatchAsync(CancellationToken.None);
+
+            var published = Assert.Single(_fixture.Broker.Published.Where(m => m.CorrelationId == correlationId));
+
+            Assert.Equal(ScriptableBrokerPublisher.EventsExchange, published.Exchange);
+            Assert.Null(published.PacedMs);
+        }
+        finally
+        {
+            _fixture.Settings.Update(new SimulationSettings { PacingEnabled = false });
+        }
     }
 
     // -------------------------------------------------------------------------- helpers

@@ -89,7 +89,9 @@ public sealed class RabbitMqConsumerService : BackgroundService
             autoDelete: false,
             cancellationToken: stoppingToken);
 
-        await DeclareRetryTopologyAsync(_channel, stoppingToken);
+        // 8.2's ladder and the parked queue. 10.1's pace ladder is declared on connect instead,
+        // by every host — it is a publisher-side concern; see BrokerTopology.
+        await BrokerTopology.DeclareRetryLadderAsync(_channel, _retry, _config.ExchangeName, stoppingToken);
 
         // Bind only the routing keys we actually handle. A new handler adds its key here
         // automatically via the dispatcher — no change to this loop.
@@ -130,54 +132,6 @@ public sealed class RabbitMqConsumerService : BackgroundService
         {
             // Expected on graceful shutdown.
         }
-    }
-
-    /// <summary>
-    /// Declares the delay ladder and the parked queue. Idempotent, so a fresh broker comes up
-    /// complete and a restart changes nothing.
-    /// <para>
-    /// Each rung is a fanout exchange with exactly one queue behind it, holding a message for its
-    /// TTL and then dead-lettering it back to <c>artifice.events</c>. Because the queue sets no
-    /// <c>x-dead-letter-routing-key</c>, the expired message keeps the routing key it arrived
-    /// with — the original event type — so it re-enters the normal pipeline with no special-case
-    /// code in the consumer. That is also exactly why the rung is chosen by <em>exchange</em>
-    /// rather than by routing key: the routing key is already spoken for.
-    /// </para>
-    /// </summary>
-    private async Task DeclareRetryTopologyAsync(IChannel channel, CancellationToken cancellationToken)
-    {
-        for (var rung = 0; rung < _retry.Delays.Length; rung++)
-        {
-            var exchange = _retry.ExchangeFor(rung);
-            var queue = _retry.QueueFor(rung);
-
-            await channel.ExchangeDeclareAsync(
-                exchange: exchange, type: ExchangeType.Fanout, durable: true, autoDelete: false,
-                cancellationToken: cancellationToken);
-
-            await channel.QueueDeclareAsync(
-                queue: queue,
-                durable: true,
-                exclusive: false,
-                autoDelete: false,
-                arguments: new Dictionary<string, object?>
-                {
-                    ["x-message-ttl"] = _retry.Delays[rung],
-                    ["x-dead-letter-exchange"] = _config.ExchangeName,
-                },
-                cancellationToken: cancellationToken);
-
-            await channel.QueueBindAsync(queue, exchange, routingKey: string.Empty, cancellationToken: cancellationToken);
-        }
-
-        // No TTL, no dead-letter exchange, and no consumer of its own: a parked message stays
-        // parked until 8.3's drain turns it into a row someone can look at.
-        await channel.QueueDeclareAsync(
-            queue: RetryConfiguration.ParkedQueueName,
-            durable: true,
-            exclusive: false,
-            autoDelete: false,
-            cancellationToken: cancellationToken);
     }
 
     private async Task OnReceivedAsync(object sender, BasicDeliverEventArgs eventArgs)

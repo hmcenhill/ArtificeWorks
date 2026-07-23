@@ -51,12 +51,12 @@ public sealed class RabbitMqRawPublisher : IBrokerPublisher
         ActivityContext? parentContext = null,
         CancellationToken cancellationToken = default)
         => PublishToAsync(_config.ExchangeName, routingKey, payload, eventId, correlationId, headers,
-            parentContext, cancellationToken);
+            parentContext, pacedMs: null, cancellationToken);
 
     /// <summary>
     /// Publishes to a named exchange rather than the shared one. 8.2's ladder uses it to push a
-    /// failed delivery onto a delay exchange, and the empty string to route a parked message
-    /// straight to a queue through the default exchange.
+    /// failed delivery onto a retry exchange, 10.1's pacing to drop an event onto a delay rung, and
+    /// the empty string to route a parked message straight to a queue through the default exchange.
     /// </summary>
     /// <param name="parentContext">
     /// The trace to publish under when there is no ambient one — which is the outbox dispatcher's
@@ -64,6 +64,7 @@ public sealed class RabbitMqRawPublisher : IBrokerPublisher
     /// retry ladder and the parked-queue republish want: they are already inside the consumer span
     /// for the delivery that failed, so their republish belongs under it.
     /// </param>
+    /// <param name="pacedMs">How long the message will rest before delivery, for the span tag (10.1).</param>
     public async Task PublishToAsync(
         string exchange,
         string routingKey,
@@ -72,6 +73,7 @@ public sealed class RabbitMqRawPublisher : IBrokerPublisher
         Guid correlationId,
         IDictionary<string, object?>? headers = null,
         ActivityContext? parentContext = null,
+        int? pacedMs = null,
         CancellationToken cancellationToken = default)
     {
         // Producer span. Named per the OTel messaging conventions so a Tempo waterfall reads as
@@ -88,6 +90,14 @@ public sealed class RabbitMqRawPublisher : IBrokerPublisher
         activity?.SetTag(ArtificeWorksTelemetry.MessagingMessageId, eventId.ToString());
         activity?.SetTag(ArtificeWorksTelemetry.EventTypeAttribute, routingKey);
         activity?.SetTag(ArtificeWorksTelemetry.CorrelationIdAttribute, correlationId.ToString());
+
+        // The gap this opens between producer and consumer spans is correct and should render as a
+        // gap in the waterfall — a paced order really is resting. Tagging it is what makes that
+        // gap self-explanatory rather than the first thing someone tries to debug (10.1).
+        if (pacedMs is int paced)
+        {
+            activity?.SetTag(ArtificeWorksTelemetry.PacedMsAttribute, paced);
+        }
 
         await using var channel = await _connection.CreateChannelAsync(cancellationToken);
 

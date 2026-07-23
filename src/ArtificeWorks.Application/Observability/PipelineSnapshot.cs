@@ -18,11 +18,19 @@ public sealed record PipelineSnapshot(
     // Age in seconds of the oldest unsent outbox row; 0 when there is none. THE lag number.
     double OutboxLagSeconds,
     long UnreplayedDeadLetters,
-    long TotalWorkOrders)
+    long TotalWorkOrders,
+    // 10.3. Two values — Visitor and Simulated — so it stays a legitimate metric dimension, and
+    // without it /system/stats reports robot traffic as demand.
+    IReadOnlyDictionary<string, long> WorkOrdersByOrigin,
+    IReadOnlyDictionary<string, long> InFlightByOrigin,
+    // 10.4. On-hand stock as a fraction of seed levels: 1.0 is a full factory, and watching it
+    // fall and snap back is the sweep made visible.
+    double StockLevelRatio)
 {
     /// <summary>What the gauges report before the first refresh has run — all zeros, never null.</summary>
     public static PipelineSnapshot Empty { get; } =
-        new(DateTime.MinValue, new Dictionary<string, long>(), 0, 0, 0, 0);
+        new(DateTime.MinValue, new Dictionary<string, long>(), 0, 0, 0, 0,
+            new Dictionary<string, long>(), new Dictionary<string, long>(), 1);
 
     /// <summary>Orders that are neither Completed nor Cancelled — work the factory still owes.</summary>
     public long InFlight => WorkOrdersByStatus

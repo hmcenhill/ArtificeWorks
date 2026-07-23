@@ -3,6 +3,7 @@ using ArtificeWorks.Application.Messaging;
 using ArtificeWorks.Application.Messaging.Events;
 using ArtificeWorks.Application.Observability;
 using ArtificeWorks.Application.Production;
+using ArtificeWorks.Application.Simulation;
 using ArtificeWorks.Domain.Models;
 using ArtificeWorks.Domain.Models.Materials;
 using ArtificeWorks.Domain.Models.Shipping;
@@ -42,9 +43,15 @@ public sealed class ShippingService
     private readonly ICarrierBooking _carrier;
     private readonly IEventPublisher _eventPublisher;
     private readonly ShippingConfiguration _config;
+    private readonly SimulationSettingsCache? _settings;
     private readonly ArtificeWorksMetrics _metrics;
     private readonly ILogger<ShippingService> _logger;
 
+    /// <param name="settings">
+    /// 10.2's live dials, supplying <c>AutoBook</c> so the carrier decision can be handed to a
+    /// visitor mid-demo. Null (a unit test) falls back to the startup configuration, which is also
+    /// what the cache holds before its first refresh.
+    /// </param>
     public ShippingService(
         IWorkOrderRepository workOrderRepository,
         IShipmentRepository shipmentRepository,
@@ -52,7 +59,8 @@ public sealed class ShippingService
         IEventPublisher eventPublisher,
         ShippingConfiguration config,
         ArtificeWorksMetrics metrics,
-        ILogger<ShippingService> logger)
+        ILogger<ShippingService> logger,
+        SimulationSettingsCache? settings = null)
     {
         _metrics = metrics;
         _workOrderRepository = workOrderRepository;
@@ -60,8 +68,11 @@ public sealed class ShippingService
         _carrier = carrier;
         _eventPublisher = eventPublisher;
         _config = config;
+        _settings = settings;
         _logger = logger;
     }
+
+    private bool AutoBook => _settings?.Current.AutoBook ?? _config.AutoBook;
 
     // ------------------------------------------------------------------ the consumer path
 
@@ -88,7 +99,7 @@ public sealed class ShippingService
             return new BookingResult(BookingOutcome.WorkOrderNotFound, $"No work order found with id {workOrderId}.");
         }
 
-        if (!_config.AutoBook)
+        if (!AutoBook)
         {
             // The order rests in Delivery with no shipment until a visitor picks a carrier. Note
             // it in the history so the wait is visible rather than looking like a stall.
@@ -241,7 +252,7 @@ public sealed class ShippingService
         }
         else
         {
-            _metrics.Transition(from.ToString(), workOrder.CurrentStatus.ToString());
+            _metrics.Transition(from.ToString(), workOrder.CurrentStatus.ToString(), workOrder.Origin.ToString());
             _logger.LogWarning("Work order {WorkOrderId} placed OnHold: {Reason}", workOrder.Id, summary);
         }
 
@@ -314,7 +325,7 @@ public sealed class ShippingService
         await _shipmentRepository.Update(cancellationToken);
 
         _metrics.ShipmentDispatched(shipment.Carrier);
-        _metrics.Transition(from.ToString(), workOrder.CurrentStatus.ToString());
+        _metrics.Transition(from.ToString(), workOrder.CurrentStatus.ToString(), workOrder.Origin.ToString());
 
         _logger.LogInformation(
             "Work order {WorkOrderId} completed: {UnitCount} unit(s) dispatched with {Carrier}, tracking {TrackingNumber}.",

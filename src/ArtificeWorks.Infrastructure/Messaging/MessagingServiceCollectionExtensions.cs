@@ -1,8 +1,10 @@
 using ArtificeWorks.Application.Messaging;
+using ArtificeWorks.Application.Simulation;
 using ArtificeWorks.Infrastructure.Messaging.Outbox;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace ArtificeWorks.Infrastructure.Messaging;
 
@@ -16,6 +18,15 @@ public static class MessagingServiceCollectionExtensions
     {
         services.Configure<RabbitMqConfiguration>(configuration.GetSection(nameof(RabbitMqConfiguration)));
         services.Configure<RetryConfiguration>(configuration.GetSection(RetryConfiguration.SectionName));
+
+        // 10.1's pace ladder is transport policy, so it is registered with the transport rather
+        // than left to each host to remember: the connection declares the ladder on connect and
+        // the outbox dispatcher consults the policy before every publish. TryAdd, because a host
+        // that also calls AddSimulationSettings brings a cache seeded from its own configuration
+        // and that one should win; with neither, the shipped defaults mean pacing is off.
+        services.Configure<PaceConfiguration>(configuration.GetSection(PaceConfiguration.SectionName));
+        services.TryAddSingleton<SimulationSettingsCache>();
+        services.TryAddSingleton<IPacePolicy, PacePolicy>();
 
         services.AddSingleton<IRabbitMqConnection, RabbitMqConnection>();
 

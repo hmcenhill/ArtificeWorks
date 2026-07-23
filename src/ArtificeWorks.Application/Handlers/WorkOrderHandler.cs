@@ -131,7 +131,7 @@ public class WorkOrderHandler
         // Every API-driven transition, counted once, here — the single funnel all four commands
         // (advance/hold/release/cancel) already go through. The workflow services count the ones
         // events drive; between them a stage change is counted in exactly one place.
-        _metrics.Transition(from.ToString(), workOrder.CurrentStatus.ToString());
+        _metrics.Transition(from.ToString(), workOrder.CurrentStatus.ToString(), workOrder.Origin.ToString());
 
         _logger.LogInformation(
             "Work order {WorkOrderId} moved {From} → {To}.",
@@ -262,7 +262,7 @@ public class WorkOrderHandler
             };
         }
 
-        var newOrder = new WorkOrder(request.Requestor, product, request.Qty, request.Notes);
+        var newOrder = new WorkOrder(request.Requestor, product, request.Qty, request.Notes, request.Origin);
 
         // The aggregate makes its own id in the constructor, so the announcement can be staged
         // before the order is saved — which is the point. The outbox row, the work order, and
@@ -282,12 +282,16 @@ public class WorkOrderHandler
             var savedWorkOrder = await _workOrderRepository.Add(newOrder);
             if (savedWorkOrder is not null)
             {
-                _metrics.WorkOrderCreated();
+                _metrics.WorkOrderCreated(newOrder.Origin.ToString());
                 ArtificeWorksTelemetry.StampWorkOrder(newOrder.Id);
+                ArtificeWorksTelemetry.StampOrigin(newOrder.Origin.ToString());
 
+                // Origin is in the message rather than only on the span: 9.3's rule is that a log
+                // line has to answer its own question, and "was that one of ours?" is the first
+                // thing anyone asks once orders start appearing on their own.
                 _logger.LogInformation(
-                    "Work order {WorkOrderId} created for {Qty} × {ProductId} by {Requestor}.",
-                    newOrder.Id, newOrder.OrderItemQty, product.ItemId, request.Requestor);
+                    "Work order {WorkOrderId} created for {Qty} × {ProductId} by {Requestor} ({Origin}).",
+                    newOrder.Id, newOrder.OrderItemQty, product.ItemId, request.Requestor, newOrder.Origin);
 
                 return new CreateWorkOrderResponse
                 {

@@ -14,6 +14,13 @@ public class WorkOrder
     public uint OrderItemQty { get; }
 
     /// <summary>
+    /// Who asked for this order — a visitor or the simulation (10.3). Set at construction and
+    /// immutable: an order does not change who wanted it, and the whole value of the flag is that
+    /// it can be trusted by a dashboard filter and a metric dimension.
+    /// </summary>
+    public WorkOrderOrigin Origin { get; }
+
+    /// <summary>
     /// The serialized units built for this order, across every attempt — including the ones
     /// that were scrapped. Nothing is ever removed: the collection is the record of what this
     /// order actually produced.
@@ -68,7 +75,16 @@ public class WorkOrder
 
     private WorkOrder() { }
 
-    public WorkOrder(string createdBy, Product item, uint qty, string? notes = null)
+    /// <param name="origin">
+    /// Visitor unless the caller says otherwise (10.3) — so every path that existed before the
+    /// simulation did keeps producing real demand without being told to.
+    /// </param>
+    public WorkOrder(
+        string createdBy,
+        Product item,
+        uint qty,
+        string? notes = null,
+        WorkOrderOrigin origin = WorkOrderOrigin.Visitor)
     {
         if (qty <= 0)
         {
@@ -81,6 +97,7 @@ public class WorkOrder
         UpdatedUtc = CreatedUtc;
         OrderedItem = item;
         OrderItemQty = qty;
+        Origin = origin;
         _assignedStock = new List<StockKeepingUnit>();
         StateHistory = new List<WorkOrderStateHistory>
         {

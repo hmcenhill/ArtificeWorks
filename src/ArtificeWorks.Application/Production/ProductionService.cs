@@ -134,7 +134,7 @@ public sealed class ProductionService
         // Counted after the commit succeeded, not after the domain call: a losing duplicate rolls
         // its units back, and a counter that moved anyway is exactly the double-count 9.2's tests
         // look for.
-        _metrics.Transition(from.ToString(), workOrder.CurrentStatus.ToString());
+        _metrics.Transition(from.ToString(), workOrder.CurrentStatus.ToString(), workOrder.Origin.ToString());
         _metrics.UnitsBuilt(built.Count, attemptNumber);
 
         var summary = $"Built {built.Count} unit(s) on attempt {attemptNumber}.";

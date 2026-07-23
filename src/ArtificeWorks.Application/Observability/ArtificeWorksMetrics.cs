@@ -47,7 +47,10 @@ public sealed class ArtificeWorksMetrics
     private readonly Counter<long> _messagesRetried;
     private readonly Counter<long> _messagesParked;
     private readonly Counter<long> _messagesReplayed;
+    private readonly Counter<long> _messagesPaced;
     private readonly Counter<long> _outboxPublished;
+    private readonly Counter<long> _ordersRetired;
+    private readonly Counter<long> _componentsRestocked;
     private readonly Histogram<double> _handlingDuration;
     private readonly Histogram<double> _publishDuration;
 
@@ -56,6 +59,8 @@ public sealed class ArtificeWorksMetrics
     private long _replayedTally;
     private long _outboxPublishedTally;
     private long _handledTally;
+    private long _pacedTally;
+    private long _retiredTally;
 
     /// <param name="snapshot">
     /// Backs the observable gauges. Their callbacks run on the meter's collection thread, in root
@@ -116,8 +121,22 @@ public sealed class ArtificeWorksMetrics
         _messagesReplayed = meter.CreateCounter<long>(
             "artificeworks.messages.replayed", "{message}", "Dead letters a human put back (8.3).");
 
+        // Tagged by rung label — 8 values at most, so the no-per-order-labels rule is untroubled,
+        // and "which rungs is this factory actually using?" is a question worth being able to ask.
+        _messagesPaced = meter.CreateCounter<long>(
+            "artificeworks.messages.paced", "{message}",
+            "Events routed through a delay rung before delivery, tagged by rung (10.1).");
+
         _outboxPublished = meter.CreateCounter<long>(
             "artificeworks.outbox.published", "{message}", "Outbox rows successfully put on the wire.");
+
+        _ordersRetired = meter.CreateCounter<long>(
+            "artificeworks.world.orders_retired", "{work_order}",
+            "Old terminal, held or faulted orders removed by the world sweep (10.4).");
+
+        _componentsRestocked = meter.CreateCounter<long>(
+            "artificeworks.world.components_restocked", "{component}",
+            "Component shelves returned to their seed level by the world sweep (10.4).");
 
         // ------------------------------------------------ things that took time (histograms)
 
@@ -143,6 +162,12 @@ public sealed class ArtificeWorksMetrics
             "artificeworks.dead_letters.unreplayed", () => snapshot.Current.UnreplayedDeadLetters, "{message}",
             "Dead letters nobody has replayed. Never decreases on its own — 8.2's ladder gives up loudly, not quietly.");
 
+        // The most watchable thing 10.4 adds: the shelves draining as the factory consumes and
+        // refilling when the sweep runs. 1.0 is "everything is at its seed level".
+        meter.CreateObservableGauge(
+            "artificeworks.world.stock_level_ratio", () => snapshot.Current.StockLevelRatio, "1",
+            "On-hand component stock as a fraction of seed levels. Falls as orders are picked, returns to 1 on a world reset.");
+
         meter.CreateObservableGauge(
             "artificeworks.work_orders.by_status",
             () => snapshot.Current.WorkOrdersByStatus
@@ -154,15 +179,22 @@ public sealed class ArtificeWorksMetrics
 
     // -------------------------------------------------------------------------- recording
 
-    public void WorkOrderCreated() => _ordersCreated.Add(1);
+    /// <param name="origin">
+    /// Visitor or Simulated (10.3). Exactly two values, forever, which is what makes it a
+    /// legitimate dimension under the no-per-order-labels rule above — and without it
+    /// <c>/system/stats</c> and every Grafana panel report robot traffic as demand.
+    /// </param>
+    public void WorkOrderCreated(string origin = "Visitor") =>
+        _ordersCreated.Add(1, new KeyValuePair<string, object?>("origin", origin));
 
     /// <summary>
     /// One stage transition. Called by whoever commits it, once — double-counting here is the
     /// failure mode 9.2's tests exist to catch.
     /// </summary>
-    public void Transition(string from, string to) => _transitions.Add(1,
+    public void Transition(string from, string to, string origin = "Visitor") => _transitions.Add(1,
         new KeyValuePair<string, object?>("from", from),
-        new KeyValuePair<string, object?>("to", to));
+        new KeyValuePair<string, object?>("to", to),
+        new KeyValuePair<string, object?>("origin", origin));
 
     public void Pick(string outcome) => _picks.Add(1, new KeyValuePair<string, object?>("outcome", outcome));
 
@@ -219,6 +251,26 @@ public sealed class ArtificeWorksMetrics
         _messagesReplayed.Add(1, new KeyValuePair<string, object?>("event_type", eventType));
     }
 
+    /// <summary>One event held on a delay rung on its way to the wire (10.1).</summary>
+    public void MessagePaced(string eventType, string rung)
+    {
+        Interlocked.Increment(ref _pacedTally);
+        _messagesPaced.Add(1,
+            new KeyValuePair<string, object?>("event_type", eventType),
+            new KeyValuePair<string, object?>("rung", rung));
+    }
+
+    /// <summary>One world sweep's results (10.4). Both counts, once, after the sweep commits.</summary>
+    public void WorldSwept(int ordersRetired, int componentsRestocked)
+    {
+        if (ordersRetired > 0)
+        {
+            Interlocked.Add(ref _retiredTally, ordersRetired);
+            _ordersRetired.Add(ordersRetired);
+        }
+        if (componentsRestocked > 0) { _componentsRestocked.Add(componentsRestocked); }
+    }
+
     public void OutboxPublished(string eventType, double elapsedMs)
     {
         Interlocked.Increment(ref _outboxPublishedTally);
@@ -233,4 +285,6 @@ public sealed class ArtificeWorksMetrics
     public long MessagesParkedSinceStart => Interlocked.Read(ref _parkedTally);
     public long MessagesReplayedSinceStart => Interlocked.Read(ref _replayedTally);
     public long OutboxPublishedSinceStart => Interlocked.Read(ref _outboxPublishedTally);
+    public long MessagesPacedSinceStart => Interlocked.Read(ref _pacedTally);
+    public long OrdersRetiredSinceStart => Interlocked.Read(ref _retiredTally);
 }

@@ -35,22 +35,33 @@ namespace ArtificeWorks.Infrastructure.Messaging.Outbox;
 /// delivery and a handler, so in practice a work order's events are written by one host at a
 /// time.
 /// </para>
+/// <para>
+/// <strong>Pacing (10.1) is applied here because transport policy has one home.</strong> 8.1 made
+/// this the only component that touches the wire specifically so that decisions like "which
+/// exchange, with what headers, after how long" live in one file. A paced event goes onto a TTL'd
+/// delay rung instead of straight onto <c>artifice.events</c>; a replayed dead letter (8.3) is
+/// paced like anything else, which is correct rather than special-cased — the stage still takes as
+/// long as the stage takes.
+/// </para>
 /// </summary>
 public sealed class OutboxDispatcher : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly OutboxConfiguration _config;
+    private readonly IPacePolicy _pace;
     private readonly ArtificeWorksMetrics _metrics;
     private readonly ILogger<OutboxDispatcher> _logger;
 
     public OutboxDispatcher(
         IServiceScopeFactory scopeFactory,
         IOptions<OutboxConfiguration> config,
+        IPacePolicy pace,
         ArtificeWorksMetrics metrics,
         ILogger<OutboxDispatcher> logger)
     {
         _scopeFactory = scopeFactory;
         _config = config.Value;
+        _pace = pace;
         _metrics = metrics;
         _logger = logger;
     }
@@ -138,9 +149,31 @@ public sealed class OutboxDispatcher : BackgroundService
             {
                 var started = Stopwatch.GetTimestamp();
 
-                await broker.PublishRawAsync(
-                    message.EventType, message.Payload, message.EventId, message.CorrelationId,
-                    headers: null, parentContext: RestoreTraceContext(message), cancellationToken);
+                // Pacing is applied HERE and nowhere else (10.1). Since 8.1 this is the only place
+                // in the system that puts a pipeline event on the wire, which makes it the only
+                // place that has to learn about pacing: no handler, no workflow service and no
+                // event contract changes shape. Off — the shipped default — Decide returns null
+                // for everything and what follows is byte-for-byte 8.1's behaviour.
+                var pace = _pace.Decide(message.EventType);
+
+                if (pace is null)
+                {
+                    await broker.PublishRawAsync(
+                        message.EventType, message.Payload, message.EventId, message.CorrelationId,
+                        headers: null, parentContext: RestoreTraceContext(message), cancellationToken);
+                }
+                else
+                {
+                    // Onto the rung's fanout exchange. The routing key rides through untouched, so
+                    // when the TTL expires the message dead-letters into artifice.events still
+                    // saying what it is — which is why the rung had to be an exchange.
+                    await broker.PublishToAsync(
+                        pace.Exchange, message.EventType, message.Payload, message.EventId, message.CorrelationId,
+                        headers: null, parentContext: RestoreTraceContext(message), pacedMs: pace.DelayMs,
+                        cancellationToken: cancellationToken);
+
+                    _metrics.MessagePaced(message.EventType, pace.Label);
+                }
 
                 _metrics.OutboxPublished(
                     message.EventType, Stopwatch.GetElapsedTime(started).TotalMilliseconds);

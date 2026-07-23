@@ -36,6 +36,9 @@ public class ArtificeWorksDbContext : DbContext
     public DbSet<DeadLetter> DeadLetters => Set<DeadLetter>();
     public DbSet<IdempotencyRecord> IdempotencyKeys => Set<IdempotencyRecord>();
 
+    /// <summary>The factory's dials (10.2). Exactly one row, enforced by a check constraint.</summary>
+    public DbSet<SimulationSettingsRow> SimulationSettings => Set<SimulationSettingsRow>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -92,6 +95,16 @@ public class ArtificeWorksDbContext : DbContext
 
             entity.Property(x => x.BuildAttempt)
                 .IsRequired();
+
+            // 10.3. Stored as its name, like every other enum here, so the column reads in psql.
+            // Indexed because Epic 11 filters a board on it and 10.4's sweep does not — the index
+            // is for the dashboard, not the sweep.
+            entity.Property(x => x.Origin)
+                .HasConversion<string>()
+                .HasMaxLength(20)
+                .IsRequired();
+
+            entity.HasIndex(x => x.Origin);
 
             // One-to-many since 6.1, not many-to-many. A serialized unit belongs to exactly
             // one work order for its whole life — this factory builds to order rather than
@@ -168,6 +181,13 @@ public class ArtificeWorksDbContext : DbContext
             // therefore part of that SQL's contract.
             entity.Property(x => x.OnHand)
                 .HasColumnName("on_hand")
+                .IsRequired();
+
+            // 10.4. The restock target, written once by CatalogSeeder. The sweep's UPDATE names
+            // this column, so — like on_hand above — the column name is part of that SQL's
+            // contract rather than an EF detail.
+            entity.Property(x => x.SeedOnHand)
+                .HasColumnName("seed_on_hand")
                 .IsRequired();
         });
 
@@ -521,6 +541,28 @@ public class ArtificeWorksDbContext : DbContext
             // merely likely.
             entity.HasIndex(x => x.Key)
                 .IsUnique();
+        });
+
+        modelBuilder.Entity<SimulationSettingsRow>(entity =>
+        {
+            // One row, singleton by construction (10.2). The check constraint is the guarantee,
+            // not the fixed default on the property: the same shape 5.4 and 8.4 established, where
+            // the database refuses the thing that must not happen rather than the code merely
+            // avoiding it.
+            entity.ToTable("simulation_settings", table =>
+                table.HasCheckConstraint("ck_simulation_settings_singleton", "\"Id\" = 1"));
+
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.Id)
+                .ValueGeneratedNever();
+
+            entity.Property(x => x.UpdatedUtc)
+                .IsRequired();
+
+            entity.Property(x => x.UpdatedBy)
+                .HasMaxLength(200)
+                .IsRequired();
         });
     }
 }

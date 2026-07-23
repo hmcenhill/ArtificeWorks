@@ -25,12 +25,23 @@ public static class HealthChecks
     /// Registers the readiness checks. There is deliberately no <c>live</c> tag: liveness checks
     /// <em>nothing</em>, and the endpoint filters to an empty set (see <c>Program</c>).
     /// </summary>
-    public static IHealthChecksBuilder AddArtificeWorksHealthChecks(this IServiceCollection services) =>
-        services.AddHealthChecks()
+    /// <param name="includeBroker">
+    /// False for the simulation host (10.1), which holds no RabbitMQ connection to ask about — it
+    /// publishes over HTTP and schedules against the database, and a broker check there would
+    /// report on a dependency it does not have.
+    /// </param>
+    public static IHealthChecksBuilder AddArtificeWorksHealthChecks(
+        this IServiceCollection services, bool includeBroker = true)
+    {
+        var builder = services.AddHealthChecks()
             .AddCheck<DatabaseHealthCheck>("postgres", tags: [ReadyTag])
             .AddCheck<PendingMigrationsHealthCheck>("migrations", tags: [ReadyTag])
-            .AddCheck<BrokerHealthCheck>("rabbitmq", tags: [ReadyTag])
             .AddCheck<OutboxLagHealthCheck>("outbox", tags: [ReadyTag]);
+
+        return includeBroker
+            ? builder.AddCheck<BrokerHealthCheck>("rabbitmq", tags: [ReadyTag])
+            : builder;
+    }
 }
 
 /// <summary>

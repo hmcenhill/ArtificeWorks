@@ -214,8 +214,8 @@ Prometheus mangles them: dots become underscores and counters gain `_total`. So
 
 | Instrument | Kind | Notable tags |
 |---|---|---|
-| `artificeworks.work_orders.created` | counter | — |
-| `artificeworks.work_orders.transitions` | counter | `from`, `to` |
+| `artificeworks.work_orders.created` | counter | `origin` |
+| `artificeworks.work_orders.transitions` | counter | `from`, `to`, `origin` |
 | `artificeworks.materials.picks` | counter | `outcome` |
 | `artificeworks.units.built` / `.passed` / `.scrapped` | counter | — |
 | `artificeworks.production.rework_attempts` | counter | — |
@@ -224,12 +224,23 @@ Prometheus mangles them: dots become underscores and counters gain `_total`. So
 | `artificeworks.messages.retried` | counter | `event_type`, `rung` |
 | `artificeworks.messages.parked` / `.replayed` | counter | `event_type` |
 | `artificeworks.outbox.published` | counter | `event_type` |
+| `artificeworks.messages.paced` | counter | `event_type`, `rung` |
+| `artificeworks.world.orders_retired` / `.components_restocked` | counter | — |
 | `artificeworks.messages.handling.duration` | histogram (ms) | `event_type`, `outcome` |
 | `artificeworks.outbox.publish.duration` | histogram (ms) | `event_type` |
 | `artificeworks.outbox.unsent` | gauge | — |
 | `artificeworks.outbox.lag` | gauge (s) | — |
 | `artificeworks.dead_letters.unreplayed` | gauge | — |
 | `artificeworks.work_orders.by_status` | gauge | `status` |
+| `artificeworks.world.stock_level_ratio` | gauge | — |
+
+The last five rows and the two `origin` tags are Epic 10. `origin` (`Visitor`/`Simulated`) is a
+two-valued dimension — the kind a metric *does* get — so a dashboard can subtract simulated traffic
+from anything that looks like a business number. `world.stock_level_ratio` (1.0 = full shelves) is
+the most watchable: it falls as orders are picked and snaps back when the world sweep restocks. A
+paced order also stamps `artificeworks.paced_ms` on its **producer span** (not a metric), so the
+seconds-wide gap between publish and process in a Tempo waterfall reads as explained rather than as
+a stall.
 
 Plus the framework's own free meters: ASP.NET Core, HttpClient, EF Core, and `System.Runtime`
 (GC, threadpool).

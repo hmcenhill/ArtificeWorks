@@ -46,6 +46,19 @@ public static class ArtificeWorksTelemetry
     public const string OutcomeAttribute = "artificeworks.outcome";
 
     /// <summary>
+    /// How long a paced message will rest in a delay queue before delivery (10.1). It explains the
+    /// seconds-wide gap between a producer span and its consumer span: the factory is working, not
+    /// stalled.
+    /// </summary>
+    public const string PacedMsAttribute = "artificeworks.paced_ms";
+
+    /// <summary>
+    /// Who a work order came from — a visitor or the simulation (10.3). Two values, so it is safe
+    /// as a metric dimension as well as a span attribute; see <c>ArtificeWorksMetrics</c>.
+    /// </summary>
+    public const string OriginAttribute = "artificeworks.origin";
+
+    /// <summary>
     /// The correlation id's key in OTel baggage — the decision taken at grooming. <c>traceparent</c>
     /// carries causality; this carries the id a human can read out loud. Baggage propagates
     /// automatically over HTTP and is injected into AMQP headers by the raw publisher.
@@ -70,7 +83,14 @@ public static class ArtificeWorksTelemetry
     public static void StampWorkOrder(Guid workOrderId) =>
         Activity.Current?.SetTag(WorkOrderIdAttribute, workOrderId.ToString());
 
+    /// <summary>Tags the ambient span with who the order came from (10.3) — a visitor or the simulation.</summary>
+    public static void StampOrigin(string origin) =>
+        Activity.Current?.SetTag(OriginAttribute, origin);
+
     /// <summary>Names the service in the OTel resource. Both hosts pass one of these, and nothing else.</summary>
     public const string ApiServiceName = "artificeworks.api";
     public const string WorkerServiceName = "artificeworks.workers";
+
+    /// <summary>The third host (10.1). It publishes and schedules; it consumes nothing.</summary>
+    public const string SimulationServiceName = "artificeworks.simulation";
 }

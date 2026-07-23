@@ -43,6 +43,7 @@ namespace ArtificeWorks.IntegrationTests;
 /// on a single consumer, the broker path serializes deliveries and cannot demonstrate them.
 /// </para>
 /// </summary>
+[Collection(BrokerTestCollection.Name)]
 public class WorkerConsumerTests : IAsyncLifetime
 {
     private const string Exchange = "artifice.events";
@@ -75,6 +76,16 @@ public class WorkerConsumerTests : IAsyncLifetime
             // The shipped 1s poll would add a second per hop to a six-hop pipeline. The dispatcher
             // is the same code either way; only the patience differs.
             ["Outbox:PollIntervalMs"] = "100",
+
+            // A short retry ladder, for the same reason. This test is about the happy path crossing
+            // the bus, not about how long a rung waits — but the pipeline is real, so a transient
+            // hiccup under heavy Docker load (a DB timeout, a concurrency conflict) is classified
+            // transient and climbs the ladder. On the shipped 5s/30s/2m rungs a single unlucky hop
+            // can blow a 90s budget; on these it costs a fraction of a second and the test measures
+            // what it means to.
+            ["Retry:DelaysMs:0"] = "200",
+            ["Retry:DelaysMs:1"] = "400",
+            ["Retry:DelaysMs:2"] = "800",
         };
 
         var builder = Host.CreateApplicationBuilder();
@@ -127,6 +138,35 @@ public class WorkerConsumerTests : IAsyncLifetime
         }
 
         await _host.StartAsync();
+
+        // Close the startup race before any test publishes. `RabbitMqConsumerService` is a
+        // BackgroundService, so `StartAsync` returns as soon as its `ExecuteAsync` hits its first
+        // await — which is *before* the queue is declared and bound. `artifice.events` is a
+        // DIRECT exchange, and a direct exchange silently drops a message with no matching binding,
+        // so a `work-order.scheduled` the outbox dispatched in that window would vanish and the
+        // order would sit at Scheduled forever. In isolation the consumer usually wins the race;
+        // once the process is warm from an earlier broker test it does not, which is what made this
+        // flake only in the full suite. Declaring the binding here (idempotent with the consumer's
+        // own declare) means the message is retained no matter who gets there first — the same
+        // guard RetryLadderTests and PaceLadderTests already use.
+        await WaitForConsumerBindings();
+    }
+
+    /// <summary>Declares and binds the work queue for every handled routing key, idempotently.</summary>
+    private async Task WaitForConsumerBindings()
+    {
+        var dispatcher = _host.Services.GetRequiredService<EventDispatcher>();
+
+        await using var channel = await _host.Services
+            .GetRequiredService<IRabbitMqConnection>().CreateChannelAsync();
+
+        await channel.QueueDeclareAsync(
+            RabbitMqConsumerService.QueueName, durable: true, exclusive: false, autoDelete: false);
+
+        foreach (var eventType in dispatcher.HandledEventTypes)
+        {
+            await channel.QueueBindAsync(RabbitMqConsumerService.QueueName, Exchange, eventType);
+        }
     }
 
     public async Task DisposeAsync()
@@ -366,6 +406,7 @@ public class WorkerConsumerTests : IAsyncLifetime
             var order = await context.WorkOrders.AsNoTracking().SingleAsync(wo => wo.Id == workOrderId);
             return order.CurrentStatus == WorkOrderStatus.Completed ? order : null;
         });
+
         Assert.NotNull(completed);
 
         List<Activity> captured;
@@ -413,10 +454,21 @@ public class WorkerConsumerTests : IAsyncLifetime
 
     private static string RoutingKeyOf(IntegrationEvent @event) => @event.EventType;
 
-    /// <summary>Polls until the asynchronous pipeline has caught up, or gives up.</summary>
+    /// <summary>
+    /// Polls until the asynchronous pipeline has caught up, or gives up.
+    /// <para>
+    /// The budget was 30 seconds until Epic 10, which was generous when this was one of three
+    /// container-owning classes and marginal once it was one of six — a six-hop pipeline racing
+    /// several other Testcontainers stacks for one Docker host. Widened rather than tuned away:
+    /// this is an <em>eventually</em> assertion about a pipeline whose whole design is that work is
+    /// never lost, so the failure it must catch is "it never arrives", not "it was slow today".
+    /// (10.1's broker-owning classes were also put in one collection so they stop competing with
+    /// each other — see <see cref="BrokerTestCollection"/>.)
+    /// </para>
+    /// </summary>
     private static async Task<T?> Poll<T>(Func<Task<T?>> read) where T : class
     {
-        var deadline = DateTime.UtcNow.AddSeconds(30);
+        var deadline = DateTime.UtcNow.AddSeconds(90);
         while (DateTime.UtcNow < deadline)
         {
             var value = await read();

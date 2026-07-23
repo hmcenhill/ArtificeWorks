@@ -47,10 +47,10 @@ the only thing all three processes share besides the database itself.
 
 ## Acceptance Criteria
 
-- [ ] A created work order progresses through the full pipeline with no human action
-- [ ] Simulation pacing and failure rates are configurable at runtime
-- [ ] The world can be reseeded/reset on a schedule and on demand
-- [ ] Simulated activity is distinguishable in events/logs from visitor actions
+- [x] A created work order progresses through the full pipeline with no human action
+- [x] Simulation pacing and failure rates are configurable at runtime
+- [x] The world can be reseeded/reset on a schedule and on demand
+- [x] Simulated activity is distinguishable in events/logs from visitor actions
 
 ## Stories
 

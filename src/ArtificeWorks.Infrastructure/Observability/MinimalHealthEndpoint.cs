@@ -1,19 +1,19 @@
 using System.Net;
 using System.Text;
 
-using ArtificeWorks.Infrastructure.Observability;
-
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace ArtificeWorks.Workers.Health;
+namespace ArtificeWorks.Infrastructure.Observability;
 
 /// <summary>
-/// A health signal for the worker (9.4), which had none — and is the half more likely to be
-/// wedged: the API failing is loud, a consumer that has quietly stopped consuming is not.
+/// A health signal for a host that is not a web application (9.4, shared across hosts by 10.1).
+/// The worker had none, and it is the half more likely to be wedged: the API failing is loud, a
+/// consumer that has quietly stopped consuming is not. The simulation host has the same problem and
+/// less to notice it by, so it uses the same listener.
 /// <para>
 /// <strong>Deliberately an <see cref="HttpListener"/>, not a web host.</strong> Making the worker a
 /// Web SDK project to expose two endpoints would give it Kestrel, MVC's conventions, a second
@@ -21,7 +21,7 @@ namespace ArtificeWorks.Workers.Health;
 /// The story asked for something kept small; this is that.
 /// </para>
 /// <para>
-/// <strong>It cannot take the worker down.</strong> A prefix it isn't allowed to bind, or a port
+/// <strong>It cannot take its host down.</strong> A prefix it isn't allowed to bind, or a port
 /// already in use, is a warning at startup and nothing more — the same rule the epic sets for
 /// telemetry, for the same reason: the thing that watches the pipeline must never be able to stop it.
 /// </para>
@@ -30,21 +30,21 @@ namespace ArtificeWorks.Workers.Health;
 ///   <item><c>/health/ready</c> — the same dependency checks the API runs.</item>
 /// </list>
 /// </summary>
-public sealed class WorkerHealthEndpoint : BackgroundService
+public sealed class MinimalHealthEndpoint : BackgroundService
 {
     /// <summary>Where to listen. Localhost by default because that needs no URL ACL on Windows.</summary>
     public const string PrefixSetting = "WorkerHealth:Prefix";
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IConfiguration _configuration;
-    private readonly ILogger<WorkerHealthEndpoint> _logger;
+    private readonly ILogger<MinimalHealthEndpoint> _logger;
 
     private HttpListener? _listener;
 
-    public WorkerHealthEndpoint(
+    public MinimalHealthEndpoint(
         IServiceScopeFactory scopeFactory,
         IConfiguration configuration,
-        ILogger<WorkerHealthEndpoint> logger)
+        ILogger<MinimalHealthEndpoint> logger)
     {
         _scopeFactory = scopeFactory;
         _configuration = configuration;
@@ -56,7 +56,7 @@ public sealed class WorkerHealthEndpoint : BackgroundService
         var prefix = _configuration[PrefixSetting];
         if (string.IsNullOrWhiteSpace(prefix))
         {
-            _logger.LogDebug("No {Setting} configured; the worker exposes no health endpoint.", PrefixSetting);
+            _logger.LogDebug("No {Setting} configured; this host exposes no health endpoint.", PrefixSetting);
             return;
         }
 
@@ -69,11 +69,11 @@ public sealed class WorkerHealthEndpoint : BackgroundService
         catch (Exception e)
         {
             _logger.LogWarning(e,
-                "Could not listen on {Prefix}; the worker will run without a health endpoint.", prefix);
+                "Could not listen on {Prefix}; this host will run without a health endpoint.", prefix);
             return;
         }
 
-        _logger.LogInformation("Worker health endpoint listening on {Prefix} (/health/live, /health/ready).", prefix);
+        _logger.LogInformation("Health endpoint listening on {Prefix} (/health/live, /health/ready).", prefix);
 
         while (!stoppingToken.IsCancellationRequested)
         {

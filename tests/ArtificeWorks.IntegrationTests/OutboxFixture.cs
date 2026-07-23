@@ -4,6 +4,7 @@ using System.Diagnostics;
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Messaging;
 using ArtificeWorks.Application.Observability;
+using ArtificeWorks.Application.Simulation;
 using ArtificeWorks.Infrastructure.Data;
 using ArtificeWorks.Infrastructure.Messaging;
 using ArtificeWorks.Infrastructure.Messaging.Outbox;
@@ -35,6 +36,9 @@ public class OutboxFixture : IAsyncLifetime
     public ServiceProvider Services { get; private set; } = null!;
     public ScriptableBrokerPublisher Broker { get; } = new();
 
+    /// <summary>The live dials (10.2), so a test can turn pacing on mid-fixture the way a PUT would.</summary>
+    public SimulationSettingsCache Settings { get; } = new();
+
     public async Task InitializeAsync()
     {
         await _postgres.StartAsync();
@@ -56,6 +60,13 @@ public class OutboxFixture : IAsyncLifetime
         services.AddMetrics();
         services.AddSingleton<PipelineSnapshotCache>();
         services.AddSingleton<ArtificeWorksMetrics>();
+        // 10.1's pacing, wired for real but OFF by default via the shipped settings — so the
+        // whole of this fixture asserts on 8.1's behaviour unchanged, and Pacing() below turns it
+        // on for the one test that is about pacing.
+        services.Configure<PaceConfiguration>(_ => { });
+        services.AddSingleton(Settings);
+        services.AddSingleton<IPacePolicy, PacePolicy>();
+
         services.Configure<OutboxConfiguration>(options =>
         {
             options.BatchSize = 10;
@@ -73,6 +84,7 @@ public class OutboxFixture : IAsyncLifetime
     public OutboxDispatcher NewDispatcher() => new(
         Services.GetRequiredService<IServiceScopeFactory>(),
         Services.GetRequiredService<IOptions<OutboxConfiguration>>(),
+        Services.GetRequiredService<IPacePolicy>(),
         Services.GetRequiredService<ArtificeWorksMetrics>(),
         Services.GetRequiredService<Microsoft.Extensions.Logging.ILogger<OutboxDispatcher>>());
 
@@ -103,6 +115,9 @@ public sealed class ScriptableBrokerPublisher : IBrokerPublisher
 
     public IReadOnlyList<PublishedMessage> Published => _published.ToList();
 
+    /// <summary>The exchange a message goes to when nothing paces it — the shared events exchange.</summary>
+    public const string EventsExchange = "artifice.events";
+
     public Task PublishRawAsync(
         string routingKey,
         string payload,
@@ -110,6 +125,19 @@ public sealed class ScriptableBrokerPublisher : IBrokerPublisher
         Guid correlationId,
         IDictionary<string, object?>? headers = null,
         ActivityContext? parentContext = null,
+        CancellationToken cancellationToken = default)
+        => PublishToAsync(EventsExchange, routingKey, payload, eventId, correlationId, headers,
+            parentContext, pacedMs: null, cancellationToken);
+
+    public Task PublishToAsync(
+        string exchange,
+        string routingKey,
+        string payload,
+        Guid eventId,
+        Guid correlationId,
+        IDictionary<string, object?>? headers = null,
+        ActivityContext? parentContext = null,
+        int? pacedMs = null,
         CancellationToken cancellationToken = default)
     {
         if (IsDown)
@@ -119,11 +147,20 @@ public sealed class ScriptableBrokerPublisher : IBrokerPublisher
 
         // The trace context is recorded, not ignored: 9.1's claim is that the dispatcher restores
         // the activity the row was STAGED under, and this is the only place a test can see what
-        // was actually handed to the wire.
-        _published.Enqueue(new PublishedMessage(routingKey, eventId, correlationId, payload, parentContext));
+        // was actually handed to the wire. The exchange and the paced delay are recorded for the
+        // same reason at 10.1: "did the dispatcher route this onto a delay rung?" is only
+        // answerable here.
+        _published.Enqueue(new PublishedMessage(
+            routingKey, eventId, correlationId, payload, parentContext, exchange, pacedMs));
         return Task.CompletedTask;
     }
 }
 
 public sealed record PublishedMessage(
-    string RoutingKey, Guid EventId, Guid CorrelationId, string Payload, ActivityContext? ParentContext);
+    string RoutingKey,
+    Guid EventId,
+    Guid CorrelationId,
+    string Payload,
+    ActivityContext? ParentContext,
+    string Exchange = ScriptableBrokerPublisher.EventsExchange,
+    int? PacedMs = null);

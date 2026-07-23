@@ -137,7 +137,10 @@ public class ObservabilityTests : IClassFixture<ApiFixture>
             UnsentOutboxRows: 500,
             OutboxLagSeconds: OutboxLagHealthCheck.DegradedAfterSeconds + 60,
             UnreplayedDeadLetters: 0,
-            TotalWorkOrders: 0));
+            TotalWorkOrders: 0,
+            WorkOrdersByOrigin: new Dictionary<string, long>(),
+            InFlightByOrigin: new Dictionary<string, long>(),
+            StockLevelRatio: 1));
 
         var result = await new OutboxLagHealthCheck(cache)
             .CheckHealthAsync(new HealthCheckContext(), CancellationToken.None);
@@ -166,8 +169,9 @@ public class ObservabilityTests : IClassFixture<ApiFixture>
         Assert.Equal(HealthStatus.Unhealthy, result.Status);
     }
 
-    private PipelineSnapshotService Snapshot() => _fixture.Services
-        .GetServices<IHostedService>()
-        .OfType<PipelineSnapshotService>()
-        .Single();
+    // Resolved as a scheduled task rather than a hosted service since 10.1 folded the standalone
+    // timer loops onto PeriodicTaskHost. Still the same class, still refreshed on demand here so a
+    // test asserts on a reading it took rather than on one it waited for.
+    private PipelineSnapshotService Snapshot() =>
+        _fixture.Services.GetRequiredService<PipelineSnapshotService>();
 }

@@ -13,6 +13,7 @@ using ArtificeWorks.Infrastructure.Data;
 using ArtificeWorks.Infrastructure.Messaging;
 using ArtificeWorks.Infrastructure.Observability;
 using ArtificeWorks.Infrastructure.Persistence;
+using ArtificeWorks.Infrastructure.Simulation;
 using ArtificeWorks.Infrastructure.Workflow;
 
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
@@ -106,6 +107,15 @@ builder.Services.AddShipping(builder.Configuration);
 // Recovery (8.3). The API is the half of this that a human touches: see what failed, and put it
 // back. The worker owns the other half, the drain that turns parked messages into rows.
 builder.Services.AddDeadLetters();
+
+// The simulation's dials (10.2) and the pace policy the outbox dispatcher above consults (10.1).
+// The API is where GET/PUT /system/simulation is served, and it is also a publisher, so it needs
+// both halves.
+builder.Services.AddSimulationSettings(builder.Configuration);
+
+// The world sweep (10.4), for POST /system/world/reset. The same service the simulation host runs
+// on a schedule — one code path, so the button and the schedule cannot drift apart.
+builder.Services.AddWorldReset();
 
 builder.Services.AddScoped<ProductHandler>();
 builder.Services.AddScoped<WorkOrderHandler>();

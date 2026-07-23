@@ -4,6 +4,7 @@
     <Project Path="src/ArtificeWorks.Application/ArtificeWorks.Application.csproj" />
     <Project Path="src/ArtificeWorks.Domain/ArtificeWorks.Domain.csproj" />
     <Project Path="src/ArtificeWorks.Infrastructure/ArtificeWorks.Infrastructure.csproj" />
+    <Project Path="src/ArtificeWorks.Simulation/ArtificeWorks.Simulation.csproj" />
     <Project Path="src/ArtificeWorks.Workers/ArtificeWorks.Workers.csproj" />
   </Folder>
   <Folder Name="/tests/">

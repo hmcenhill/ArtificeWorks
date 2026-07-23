@@ -244,6 +244,74 @@ normally. That is asserted, not assumed.
 delivery for an unknown one means the topology and the handler set have drifted apart. Acking that
 away silently is how a message disappears without anyone finding out; it parks instead.
 
+## Pacing (Epic 10)
+
+The retry ladder has a twin: a **pace ladder** that adds *time on purpose* to the happy path, so a
+demo has something to watch. An order that runs Intake → Completed in 40 milliseconds is a database
+transaction with a state machine on top; pacing makes a pick take seconds and a build take longer,
+without a handler ever sleeping.
+
+```mermaid
+flowchart LR
+    disp["outbox dispatcher"] -->|"pacing off (default)"| ex{{"artifice.events"}}
+    disp -->|"pacing on: this stage's rung"| pace[["artifice.pace.13s<br/>TTL 13000, no consumer"]]
+    pace -->|"TTL expires →<br/>dead-letters with the<br/>ORIGINAL routing key"| ex
+    ex --> q[["artifice.workers"]]
+```
+
+It is deliberately **the same shape as the retry ladder, and for the same reasons** — one fanout
+exchange plus one TTL'd queue per rung, dead-lettering back into `artifice.events` under the
+message's own routing key, so a paced event re-enters the pipeline with no special-case code. See
+[`BrokerTopology`](../src/ArtificeWorks.Infrastructure/Messaging/BrokerTopology.cs), which declares
+both.
+
+Four things worth knowing:
+
+- **Pacing is applied in the outbox dispatcher, nowhere else.** Since Epic 8 the dispatcher is the
+  only component that puts a pipeline event on the wire, which makes it the only place that has to
+  learn about pacing. No handler, workflow service or event contract changes shape, and a **paced
+  order and an unpaced order reach identical end state.**
+- **The rung is chosen by the event's routing key**, because the wait represents the work the
+  *consumer* is about to do: `work-order.scheduled` pays for the pick, `work-order.materials-reserved`
+  for the build, and so on. Announcements (`created`, `completed`, `faulted`) are never paced —
+  nothing is waiting to do work because of them.
+- **Pacing is quantized.** A stage's configured duration snaps to the nearest rung on a Fibonacci-ish
+  ladder (`1s 2s 3s 5s 8s 13s 21s 34s`), and jitter chooses *which rung*, not how many milliseconds.
+  Setting 5s and 6s may resolve to the same rung; a message already resting in a delay queue keeps
+  its old timing. `GET /system/simulation` reports the rung each duration resolved to, so neither
+  looks like a bug.
+- **It is off by default.** With `Simulation:PacingEnabled` false — the shipped default — the
+  dispatcher's behaviour is byte-for-byte what Epic 8 shipped. Turning it on is a runtime dial (see
+  below), not a redeploy. Replayed dead letters are paced like anything else: the stage still takes
+  as long as the stage takes.
+
+Because a paced order rests seconds between a producer span and its consumer span, the producer span
+carries `artificeworks.paced_ms` so the gap in a Tempo waterfall reads as *explained* rather than as
+a stall. The pace ladder is declared on connect by **every** host (not just the consumer), because
+the dispatcher runs in all three and publishing to an exchange that does not exist closes the
+channel.
+
+## The dials, turnable while it runs (Epic 10)
+
+Pacing, the inspection failure rate, the carrier refusal rate, order generation and the world-sweep
+cadence all live in **one `simulation_settings` row** (singleton, `CHECK (id = 1)`), read by all
+three hosts through a cached snapshot refreshed on a timer. appsettings supplies the defaults; the
+row overrides them, seeded from configuration on first run and never stomped afterwards (the same
+contract `CatalogSeeder` has). Reading a dial is a field read — **no request, handler or metric
+collection issues a query for one.**
+
+| Endpoint | Does |
+| --- | --- |
+| `GET /system/simulation` | the current settings, their source (`configured`/`overridden`), and the resolved pace rungs |
+| `PUT /system/simulation` | validates and replaces; out-of-range → 422 `simulation_setting_out_of_range`, and changes nothing |
+| `POST /system/world/reset` | restock components to seed levels + retire old terminal/held/faulted orders (never touches in-flight orders, the catalog or `dead_letters`) |
+
+A change is **eventually consistent** across hosts — a `PUT` handled by the API reaches the worker
+within one refresh interval, and the response says so — because the worker is where inspections
+actually fail and a broadcast or a query-per-decision would both be worse than a few seconds' lag on
+a demo dial. Seeds stay in configuration deliberately: a reproducible verdict sequence is a test
+affordance, not a dial.
+
 ## Dead letters and replay
 
 `artifice.parked` has no TTL and exactly one consumer: `ParkedQueueDrain`, which writes each
@@ -456,11 +524,19 @@ flowchart LR
 | `Outbox` | `BatchSize` | `50` | Rows claimed per pass |
 | `Outbox` | `SentRetentionHours` | `72` | How long a sent row is kept as evidence |
 | `Retry` | `DelaysMs` | `[5000, 30000, 120000]` | The ladder. One rung per delay; the number of rungs *is* the retry cap |
+| `Pace` | `RungsMs` | `[1000, …, 34000]` | The pace ladder (Epic 10). One TTL'd queue per rung |
+| `Simulation` | `PacingEnabled` | `false` | Whether the dispatcher routes events through the pace ladder |
+| `Simulation` | `PaceSeconds*` | per stage | The dwell each stage appears to take, snapped to a rung |
+| `Simulation` | `GenerationEnabled` | `false` | Whether the simulation host creates orders over HTTP |
+| `Simulation` | `SettingsRefreshMs` | `5000` | How often each host re-reads the settings row |
 
-`Retry:DelaysMs` **replaces** the ladder rather than extending it — the configuration binder binds
-array entries into whatever array is already there, so `RetryConfiguration.DelaysMs` starts empty
-and the shipped default lives behind it. A non-empty default would have made configuring three
-rungs quietly produce six.
+Both `Retry:DelaysMs` and `Pace:RungsMs` **replace** their ladder rather than extending it — the
+configuration binder binds array entries into whatever array is already there, so both start empty
+in code and the shipped default lives behind them. A non-empty default would have made configuring
+three rungs quietly produce more. Everything under `Simulation` (except the deployment-shape keys
+like `SettingsRefreshMs` and `ApiBaseAddress`) is only the **default** for the `simulation_settings`
+row; once the row exists it is the authority, and the live values are a `PUT /system/simulation`
+away.
 
 ## Related code
 
@@ -469,5 +545,7 @@ rungs quietly produce six.
 - The wire: [`RabbitMqRawPublisher`](../src/ArtificeWorks.Infrastructure/Messaging/RabbitMqRawPublisher.cs), [`RabbitMqEventPublisher`](../src/ArtificeWorks.Infrastructure/Messaging/RabbitMqEventPublisher.cs)
 - Consumer, retry ladder + queue/bindings: [`RabbitMqConsumerService`](../src/ArtificeWorks.Workers/Consuming/RabbitMqConsumerService.cs), [`RetryConfiguration`](../src/ArtificeWorks.Infrastructure/Messaging/RetryConfiguration.cs), [`EventDispatcher`](../src/ArtificeWorks.Workers/Consuming/EventDispatcher.cs)
 - Dead letters: [`ParkedQueueDrain`](../src/ArtificeWorks.Workers/Consuming/ParkedQueueDrain.cs), [`DeadLetterService`](../src/ArtificeWorks.Application/Recovery/DeadLetterService.cs), [`DeadLetterController`](../src/ArtificeWorks.Api/Controllers/DeadLetterController.cs)
+- Pacing + dials (Epic 10): [`PaceConfiguration`](../src/ArtificeWorks.Infrastructure/Messaging/PaceConfiguration.cs), [`PacePolicy`](../src/ArtificeWorks.Infrastructure/Messaging/PacePolicy.cs), [`BrokerTopology`](../src/ArtificeWorks.Infrastructure/Messaging/BrokerTopology.cs), [`SimulationSettings`](../src/ArtificeWorks.Application/Simulation/SimulationSettings.cs), [`SimulationController`](../src/ArtificeWorks.Api/Controllers/SimulationController.cs), [`WorldResetService`](../src/ArtificeWorks.Application/Simulation/WorldResetService.cs)
+- Simulation host: [`ArtificeWorks.Simulation`](../src/ArtificeWorks.Simulation/Program.cs), [`OrderGenerator`](../src/ArtificeWorks.Simulation/Tasks/OrderGenerator.cs), [`PeriodicTaskHost`](../src/ArtificeWorks.Infrastructure/Scheduling/PeriodicTaskHost.cs)
 - API idempotency: [`IdempotencyFilter`](../src/ArtificeWorks.Api/Middleware/IdempotencyFilter.cs)
 - Correlation: [`CorrelationMiddleware`](../src/ArtificeWorks.Api/Middleware/CorrelationMiddleware.cs), [`CorrelationContext`](../src/ArtificeWorks.Application/Messaging/CorrelationContext.cs), [`CorrelationLog`](../src/ArtificeWorks.Application/Messaging/CorrelationLog.cs)

@@ -168,7 +168,7 @@ public sealed class MaterialPickingService
         }
         else
         {
-            _metrics.Transition(from.ToString(), workOrder.CurrentStatus.ToString());
+            _metrics.Transition(from.ToString(), workOrder.CurrentStatus.ToString(), workOrder.Origin.ToString());
 
             // Warning, not Information: a hold is the pipeline stopping, and the levelling rule
             // for this epic is that anything a visitor would want to react to is at least Warning.

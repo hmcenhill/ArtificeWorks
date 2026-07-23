@@ -1,9 +1,10 @@
 using ArtificeWorks.Application.Observability;
+using ArtificeWorks.Domain.Models;
 using ArtificeWorks.Infrastructure.Persistence;
+using ArtificeWorks.Infrastructure.Scheduling;
 
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -25,11 +26,15 @@ namespace ArtificeWorks.Infrastructure.Observability;
 /// the numbers with it silently — the exact failure mode Epic 8 spent itself removing.
 /// </para>
 /// <para>
-/// This is the third background loop next to <c>OutboxDispatcher</c> and
-/// <c>RetentionSweepService</c>. Worth folding into one timer host before a fourth arrives.
+/// <strong>It was the third hand-rolled background loop, and it is now a scheduled task</strong>
+/// (10.1). The note that used to sit here — "worth folding into one timer host before a fourth
+/// arrives" — is cashed: this runs on <c>PeriodicTaskHost</c> along with the simulation's tasks.
+/// It could not simply <em>move</em> to the simulation host, because <c>GET /system/stats</c>
+/// reads the snapshot in the API and the gauges read it in the worker; all three hosts refresh
+/// their own, sharing the type rather than the process.
 /// </para>
 /// </summary>
-public sealed class PipelineSnapshotService : BackgroundService
+public sealed class PipelineSnapshotService : IScheduledTask
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly PipelineSnapshotCache _cache;
@@ -48,24 +53,11 @@ public sealed class PipelineSnapshotService : BackgroundService
         _logger = logger;
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        _logger.LogDebug("Pipeline snapshot refreshing every {IntervalMs}ms.", _config.SnapshotIntervalMs);
+    public string Name => "pipeline-snapshot";
 
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            await RefreshAsync(stoppingToken);
+    public TimeSpan Interval => TimeSpan.FromMilliseconds(_config.SnapshotIntervalMs);
 
-            try
-            {
-                await Task.Delay(_config.SnapshotIntervalMs, stoppingToken);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-        }
-    }
+    public Task RunAsync(CancellationToken cancellationToken) => RefreshAsync(cancellationToken);
 
     /// <summary>Takes one reading. Public so a test can take it deterministically rather than waiting.</summary>
     public async Task RefreshAsync(CancellationToken cancellationToken)
@@ -100,6 +92,27 @@ public sealed class PipelineSnapshotService : BackgroundService
                 .Where(letter => letter.ReplayedUtc == null)
                 .LongCountAsync(cancellationToken);
 
+            // 10.3. Grouped in the database rather than derived from the status counts, because
+            // "how much of this is real demand?" needs the origin on both totals and in-flight —
+            // and a dashboard showing simulated traffic as throughput is a lie.
+            var byOrigin = await context.WorkOrders
+                .AsNoTracking()
+                .GroupBy(order => new { order.Origin, order.CurrentStatus })
+                .Select(group => new { group.Key.Origin, group.Key.CurrentStatus, Count = group.LongCount() })
+                .ToListAsync(cancellationToken);
+
+            // 10.4's gauge. Two scalars, not a per-component breakdown: this is "are the shelves
+            // full?", and per-component levels are a query someone runs, not a metric.
+            var stock = await context.Components
+                .AsNoTracking()
+                .GroupBy(_ => 1)
+                .Select(group => new
+                {
+                    OnHand = group.Sum(component => (long)component.OnHand),
+                    Seed = group.Sum(component => (long)component.SeedOnHand)
+                })
+                .FirstOrDefaultAsync(cancellationToken);
+
             _cache.Update(new PipelineSnapshot(
                 CapturedUtc: DateTime.UtcNow,
                 WorkOrdersByStatus: byStatus.ToDictionary(entry => entry.Status.ToString(), entry => entry.Count),
@@ -108,7 +121,17 @@ public sealed class PipelineSnapshotService : BackgroundService
                     ? 0
                     : Math.Max(0, (DateTime.UtcNow - DateTime.SpecifyKind(oldestUnsent.Value, DateTimeKind.Utc)).TotalSeconds),
                 UnreplayedDeadLetters: unreplayed,
-                TotalWorkOrders: byStatus.Sum(entry => entry.Count)));
+                TotalWorkOrders: byStatus.Sum(entry => entry.Count),
+                WorkOrdersByOrigin: byOrigin
+                    .GroupBy(entry => entry.Origin.ToString())
+                    .ToDictionary(group => group.Key, group => group.Sum(entry => entry.Count)),
+                InFlightByOrigin: byOrigin
+                    .Where(entry => entry.CurrentStatus is not (WorkOrderStatus.Completed or WorkOrderStatus.Cancelled))
+                    .GroupBy(entry => entry.Origin.ToString())
+                    .ToDictionary(group => group.Key, group => group.Sum(entry => entry.Count)),
+                // An empty catalog reads as a full factory rather than an empty one: nothing is
+                // short when nothing is stocked, and a 0 here would alarm a dashboard for no reason.
+                StockLevelRatio: stock is null || stock.Seed <= 0 ? 1 : Math.Clamp((double)stock.OnHand / stock.Seed, 0, 1)));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

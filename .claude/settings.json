@@ -48,7 +48,29 @@
       "Bash(cd \"c:/Users/hmcen/source/repos/ArtificeWorks\" && grep -n \"Diagnostics\" tests/ArtificeWorks.UnitTests/ArtificeWorks.UnitTests.csproj && ls \"C:/Users/hmcen/.nuget/packages/microsoft.extensions.diagnostics.testing/10.8.0/lib/\")",
       "Read(//c/Users/hmcen/.nuget/packages/microsoft.extensions.diagnostics.testing/10.8.0/lib/**)",
       "Read(//c/Users/hmcen/.nuget/packages/microsoft.extensions.diagnostics.testing/10.8.0/lib/net10.0/**)",
-      "Bash(grep -v \"///\")"
+      "Bash(grep -v \"///\")",
+      "Bash(git stash *)",
+      "Bash(grep -oE '\"Category\":\"ArtificeWorks[^\"]*\",\"Message\":\"[^\"]{0,160}')",
+      "Bash(grep -oE '\"LogLevel\":\"\\(Warning|Error|Critical\\)\",\"Category\":\"[^\"]*\",\"Message\":\"[^\"]{0,300}')",
+      "Bash(grep -oE '\"LogLevel\":\"[^\"]*\",\"Category\":\"[^\"]*\",\"Message\":\"[^\"]{0,200}')",
+      "Bash(cd \"c:/Users/hmcen/source/repos/ArtificeWorks\" && grep -E \"Failed!|Passed!|\\\\[FAIL\\\\]|Assert\\\\.\" /tmp/wct.log | head -10)",
+      "Bash(grep -oE '\"LogLevel\":\"\\(Warning|Error|Critical\\)\",\"Category\":\"\\(ArtificeWorks|RabbitMQ\\)[^\"]*\",\"Message\":\"[^\"]{0,250}' /tmp/full2.log)",
+      "Bash(grep -oE '\"Category\":\"ArtificeWorks[^\"]*\",\"Message\":\"[^\"]{0,140}')",
+      "Bash(cd \"c:/Users/hmcen/source/repos/ArtificeWorks\" && grep -o '\"Message\":\"[^\"]\\\\{0,180\\\\}' /tmp/full2.log | grep -i \"64df966f\" | head -20)",
+      "Bash(cd \"c:/Users/hmcen/source/repos/ArtificeWorks\" && grep -E \"FAIL\\\\]|Failed!|Passed!|Error Message\" -A 6 /tmp/full2.log | tail -20)",
+      "Bash(grep -v '^$')",
+      "Bash(sed 's/{.*//')",
+      "Bash(cd \"c:/Users/hmcen/source/repos/ArtificeWorks\" && grep -n \"Starting:\\\\|Finished:\\\\|Connected to RabbitMQ\\\\|Worker consuming\\\\|Outbox dispatcher started\" /tmp/full3.log | sed 's/{.*\"Message\":\"/ | /;s/\".*//' | tail -20)",
+      "Bash(grep -oiE '\"Exception\":\"[^\"]{0,200}')",
+      "Bash(grep -oE '\\(\\\\[xUnit[^]]*\\\\]\\\\s*\\\\S.*|\"Category\":\"[^\"]*\",\"Message\":\"[^\"]{0,120}\\)')",
+      "Bash(sed 's/{.*\"Message\":\"/ | /;s/\".*//')",
+      "Bash(grep -oE '\"Category\":\"[^\"]*\",\"Message\":\"[^\"]{0,130}')",
+      "Bash(grep -oE '\"LogLevel\":\"[^\"]*\",\"Category\":\"[^\"]*\",\"Message\":\"[^\"]{0,120}')",
+      "Bash(awk 'NR>=2440' /tmp/full3.log)",
+      "Bash(grep -oE '\"Category\":\"[^\"]*\",\"Message\":\"[^\"]{0,110}')",
+      "Bash(cd \"c:/Users/hmcen/source/repos/ArtificeWorks\" && dotnet test --nologo --logger \"console;verbosity=detailed\" 2>&1 > /tmp/f4.log; echo \"=== stack ===\"; grep -A 8 \"Error Message\" /tmp/f4.log | head -12; echo \"=== TRACE-E2E lines ===\"; grep -o '\"Message\":\"[^\"]\\\\{0,110\\\\}' /tmp/f4.log | grep -iE \"TRACE|test request\" | head)",
+      "Bash(cd \"c:/Users/hmcen/source/repos/ArtificeWorks\" && sed -n '378,382p' tests/ArtificeWorks.IntegrationTests/WorkerConsumerTests.cs; echo \"=== does traced order complete? search full4 for its workorder ===\"; grep -oE '\"Message\":\"Work order [a-f0-9-]+ completed|\"Message\":\"Reserved [0-9]+ component line\\\\\\(s\\\\\\) for work order [a-f0-9-]+: [0-9]+.CMP-TRACE' /tmp/f4.log | head; echo \"=== count of pipeline completions in full run ===\"; grep -c \"dispatched with\" /tmp/f4.log)",
+      "Bash(grep -oE '\"LogLevel\":\"\\(Warning|Error\\)\",\"Category\":\"[^\"]*\",\"Message\":\"[^\"]{0,160}' /tmp/pw2.log)"
     ]
   }
 }

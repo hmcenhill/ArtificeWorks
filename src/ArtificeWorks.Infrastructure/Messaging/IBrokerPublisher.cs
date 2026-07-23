@@ -27,4 +27,26 @@ public interface IBrokerPublisher
         IDictionary<string, object?>? headers = null,
         ActivityContext? parentContext = null,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Publishes to a named exchange rather than the shared one — which since 10.1 the dispatcher
+    /// needs too, to drop a paced event onto a delay rung instead of straight onto
+    /// <c>artifice.events</c>.
+    /// </summary>
+    /// <param name="pacedMs">
+    /// How long this message will rest in a delay queue before delivery, or null when it goes
+    /// straight through. Stamped on the producer span as <c>artificeworks.paced_ms</c> so the
+    /// seconds-wide gap it opens in the Tempo waterfall reads as <em>explained</em> rather than as
+    /// a stall — a paced trace is supposed to have a hole in it (10.1).
+    /// </param>
+    Task PublishToAsync(
+        string exchange,
+        string routingKey,
+        string payload,
+        Guid eventId,
+        Guid correlationId,
+        IDictionary<string, object?>? headers = null,
+        ActivityContext? parentContext = null,
+        int? pacedMs = null,
+        CancellationToken cancellationToken = default);
 }

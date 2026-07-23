@@ -36,6 +36,7 @@ namespace ArtificeWorks.IntegrationTests;
 /// here is that a failure gets another chance, and that nothing is ever silently dropped again.
 /// </para>
 /// </summary>
+[Collection(BrokerTestCollection.Name)]
 public class RetryLadderTests : IAsyncLifetime
 {
     private const string Exchange = "artifice.events";

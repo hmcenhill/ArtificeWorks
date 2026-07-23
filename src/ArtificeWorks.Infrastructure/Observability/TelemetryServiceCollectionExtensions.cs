@@ -1,4 +1,5 @@
 using ArtificeWorks.Application.Observability;
+using ArtificeWorks.Infrastructure.Scheduling;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -52,7 +53,7 @@ public static class TelemetryServiceCollectionExtensions
         builder.Services.AddMetrics();
         builder.Services.AddSingleton<PipelineSnapshotCache>();
         builder.Services.AddSingleton<ArtificeWorksMetrics>();
-        builder.Services.AddHostedService<PipelineSnapshotService>();
+        builder.Services.AddScheduledTask<PipelineSnapshotService>();
 
         ConfigureLogging(builder, serviceName, config);
 

@@ -11,6 +11,9 @@ public class WorkOrderDto
     public string OrderedItemId { get; set; } = string.Empty;
     public uint OrderItemQty { get; set; }
 
+    /// <summary>Who asked for it (10.3) — so a dashboard can tell a visitor's order from a robot's.</summary>
+    public WorkOrderOrigin Origin { get; set; }
+
     /// <summary>Units that have passed inspection, against <see cref="OrderItemQty"/>.</summary>
     public uint PassedQty { get; set; }
 
@@ -38,6 +41,7 @@ public class WorkOrderDto
         Status = workOrder.CurrentStatus;
         OrderedItemId = workOrder.OrderedItem.ItemId;
         OrderItemQty = workOrder.OrderItemQty;
+        Origin = workOrder.Origin;
         PassedQty = workOrder.PassedQty;
         BuildAttempt = workOrder.BuildAttempt;
         Units = workOrder.AssignedStock

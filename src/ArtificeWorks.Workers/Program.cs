@@ -6,10 +6,10 @@ using ArtificeWorks.Infrastructure.Data;
 using ArtificeWorks.Infrastructure.Messaging;
 using ArtificeWorks.Infrastructure.Observability;
 using ArtificeWorks.Infrastructure.Persistence;
+using ArtificeWorks.Infrastructure.Simulation;
 using ArtificeWorks.Infrastructure.Workflow;
 using ArtificeWorks.Workers.Consuming;
 using ArtificeWorks.Workers.Handlers;
-using ArtificeWorks.Workers.Health;
 
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -34,6 +34,12 @@ builder.Services.AddScoped<IMaterialReservationRepository, MaterialReservationRe
 
 // The material-picking workflow (Epic 5) — the worker's real work.
 builder.Services.AddScoped<MaterialPickingService>();
+
+// The factory's live dials (10.2). Registered here and not only in the API for the reason the
+// story exists: a PUT handled by the API changes nothing about what the worker does, and the
+// worker is where inspections actually fail. It also brings 10.1's pace policy, which the
+// worker's own outbox dispatcher consults.
+builder.Services.AddSimulationSettings(builder.Configuration);
 
 // Production + inspection (Epic 6): the middle of the pipeline, including the rework cycle.
 builder.Services.AddProductionAndInspection(builder.Configuration);
@@ -75,7 +81,7 @@ builder.Services.AddEventHandler<ShipmentScheduled, ShipmentScheduledHandler>();
 // wedged — a consumer that has quietly stopped consuming is silent, which is the failure mode this
 // milestone exists to remove. Same checks as the API, over a deliberately tiny HTTP listener.
 builder.Services.AddArtificeWorksHealthChecks();
-builder.Services.AddHostedService<WorkerHealthEndpoint>();
+builder.Services.AddHostedService<MinimalHealthEndpoint>();
 
 var host = builder.Build();
 host.Run();
