@@ -72,7 +72,10 @@
       "Bash(cd \"c:/Users/hmcen/source/repos/ArtificeWorks\" && sed -n '378,382p' tests/ArtificeWorks.IntegrationTests/WorkerConsumerTests.cs; echo \"=== does traced order complete? search full4 for its workorder ===\"; grep -oE '\"Message\":\"Work order [a-f0-9-]+ completed|\"Message\":\"Reserved [0-9]+ component line\\\\\\(s\\\\\\) for work order [a-f0-9-]+: [0-9]+.CMP-TRACE' /tmp/f4.log | head; echo \"=== count of pipeline completions in full run ===\"; grep -c \"dispatched with\" /tmp/f4.log)",
       "Bash(grep -oE '\"LogLevel\":\"\\(Warning|Error\\)\",\"Category\":\"[^\"]*\",\"Message\":\"[^\"]{0,160}' /tmp/pw2.log)",
       "Bash(xargs wc -l)",
-      "Bash(grep -v -E '^\\(id|name|.*_id\\)$')"
+      "Bash(grep -v -E '^\\(id|name|.*_id\\)$')",
+      "Bash(npm --version)",
+      "Bash(npm install *)",
+      "Bash(npm run *)"
     ]
   }
 }

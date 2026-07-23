@@ -1,0 +1,1 @@
+{"root":["./src/applayout.tsx","./src/main.tsx","./src/api/client.ts","./src/api/types.ts","./src/components/ordercard.tsx","./src/components/originbadge.tsx","./src/domain/stages.ts","./src/hooks/usepolleddata.ts","./src/util/time.ts","./src/views/boardview.tsx","./src/views/orderdetailview.tsx"],"errors":true,"version":"5.9.3"}

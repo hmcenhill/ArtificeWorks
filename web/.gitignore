@@ -1,0 +1,14 @@
+# Frontend build + dependency output — never committed.
+node_modules/
+dist/
+dist-ssr/
+
+# Local env overrides (e.g. VITE_API_TARGET)
+.env
+.env.local
+.env.*.local
+
+# Editor / OS noise
+*.log
+.DS_Store
+.vite/

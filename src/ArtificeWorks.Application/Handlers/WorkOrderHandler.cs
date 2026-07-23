@@ -16,6 +16,12 @@ public class WorkOrderHandler
     /// <summary>Author recorded against state-history entries this handler writes on its own initiative.</summary>
     public const string Author = "work-order-api";
 
+    /// <summary>Rows <c>GET /work-orders</c> returns when the caller names no <c>limit</c> (11.1).</summary>
+    public const int DefaultListLimit = 100;
+
+    /// <summary>The ceiling on <c>GET /work-orders</c>'s <c>limit</c>: a live board, not a report.</summary>
+    public const int MaxListLimit = 500;
+
     private readonly IWorkOrderRepository _workOrderRepository;
     private readonly IProductRepository _productRepository;
     private readonly IShipmentRepository _shipmentRepository;
@@ -47,6 +53,21 @@ public class WorkOrderHandler
         return workOrder is null
             ? null
             : new WorkOrderDto(workOrder, await _shipmentRepository.GetForWorkOrder(id));
+    }
+
+    /// <summary>
+    /// The board's list (11.1). Clamps the requested <paramref name="limit"/> to a sane window —
+    /// a missing or non-positive value falls back to <see cref="DefaultListLimit"/>, and nothing
+    /// larger than <see cref="MaxListLimit"/> gets through — then hands the bounded query to the
+    /// read model. A live board is not a paged report, so there is no open-ended paging here.
+    /// </summary>
+    public Task<IReadOnlyList<WorkOrderListItemDto>> ListWorkOrders(
+        IReadOnlyCollection<WorkOrderStatus> statuses,
+        IReadOnlyCollection<WorkOrderOrigin> origins,
+        int? limit)
+    {
+        var effectiveLimit = limit is > 0 ? Math.Min(limit.Value, MaxListLimit) : DefaultListLimit;
+        return _workOrderRepository.List(statuses, origins, effectiveLimit);
     }
 
     public async Task<WorkOrderHistoryDto?> GetWorkOrderHistory(Guid id)

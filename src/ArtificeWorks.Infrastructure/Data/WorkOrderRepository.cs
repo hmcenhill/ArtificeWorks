@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 
+using ArtificeWorks.Application.Data;
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Domain.Models;
 using ArtificeWorks.Infrastructure.Persistence;
@@ -36,6 +37,49 @@ public class WorkOrderRepository : IWorkOrderRepository
             .Include(wo => wo.StateHistory)
             .Include(wo => wo.AssignedStock)
             .FirstOrDefaultAsync(wo => wo.Id == id);
+    }
+
+    public async Task<IReadOnlyList<WorkOrderListItemDto>> List(
+        IReadOnlyCollection<WorkOrderStatus> statuses,
+        IReadOnlyCollection<WorkOrderOrigin> origins,
+        int limit)
+    {
+        var query = _context.WorkOrders.AsNoTracking();
+
+        // Both filters are optional and repeatable — empty means "no restriction". The IN over the
+        // value-converted enum columns translates to the stored names, so this narrows in Postgres
+        // rather than in memory.
+        if (origins.Count > 0)
+        {
+            query = query.Where(wo => origins.Contains(wo.Origin));
+        }
+        if (statuses.Count > 0)
+        {
+            query = query.Where(wo => statuses.Contains(wo.CurrentStatus));
+        }
+
+        // With an explicit status filter the caller has said what it wants, so it is a plain
+        // newest-first window. Without one, the default is the bounded live world: in-flight
+        // orders sort ahead of terminal ones (the CASE below evaluates false=0 for live,
+        // true=1 for Completed/Cancelled), so when `limit` bites it is the older terminal
+        // orders that fall off, never a live one.
+        var ordered = statuses.Count > 0
+            ? query.OrderByDescending(wo => wo.CreatedUtc)
+            : query
+                .OrderBy(wo => wo.CurrentStatus == WorkOrderStatus.Completed
+                            || wo.CurrentStatus == WorkOrderStatus.Cancelled)
+                .ThenByDescending(wo => wo.CreatedUtc);
+
+        return await ordered
+            .Take(limit)
+            .Select(wo => new WorkOrderListItemDto(
+                wo.Id,
+                wo.OrderedItem.ItemName,
+                wo.CurrentStatus,
+                wo.Origin,
+                wo.CreatedUtc,
+                wo.UpdatedUtc))
+            .ToListAsync();
     }
 
     public async Task<WorkOrder> Add(WorkOrder workOrder)

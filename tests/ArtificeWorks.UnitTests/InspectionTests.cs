@@ -353,6 +353,11 @@ public class InspectionTests
         public Task<WorkOrder?> GetWithHistory(Guid id) => Get(id);
         public Task<WorkOrder> Add(WorkOrder order) => Task.FromResult(order);
         public Task Update(WorkOrder order) => Task.CompletedTask;
+        public Task<IReadOnlyList<Application.Data.WorkOrderListItemDto>> List(
+            IReadOnlyCollection<WorkOrderStatus> statuses,
+            IReadOnlyCollection<WorkOrderOrigin> origins,
+            int limit)
+            => Task.FromResult<IReadOnlyList<Application.Data.WorkOrderListItemDto>>([]);
     }
 
     private sealed class FakeProductionRunRepository : IProductionRunRepository

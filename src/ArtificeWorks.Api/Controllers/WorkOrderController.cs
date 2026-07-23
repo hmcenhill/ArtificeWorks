@@ -7,6 +7,7 @@ using ArtificeWorks.Application.Data;
 using ArtificeWorks.Application.Handlers;
 using ArtificeWorks.Application.Inspection;
 using ArtificeWorks.Application.Shipping;
+using ArtificeWorks.Domain.Models;
 
 namespace ArtificeWorks.Api.Controllers;
 
@@ -22,6 +23,28 @@ public class WorkOrderController(
     private readonly WorkOrderHandler _workOrderHandler = workOrderHandler;
     private readonly InspectionService _inspection = inspection;
     private readonly ShippingService _shipping = shipping;
+
+    /// <summary>
+    /// The factory's current orders as a slim list, for the board (11.1). Filterable by
+    /// <c>status</c> and <c>origin</c> — both optional and repeatable, so
+    /// <c>?status=Inspection&amp;status=Delivery&amp;origin=Visitor</c> narrows to visitor orders
+    /// in either stage.
+    /// <para>
+    /// Bounded and newest-first by construction. With no <c>status</c> filter the result is the
+    /// bounded live world — every in-flight order plus a capped window of the most-recently
+    /// finished ones — not an ever-growing history; that is a report, and this is a live board.
+    /// <c>limit</c> caps the window (default <see cref="WorkOrderHandler.DefaultListLimit"/>,
+    /// ceiling <see cref="WorkOrderHandler.MaxListLimit"/>).
+    /// </para>
+    /// </summary>
+    [HttpGet]
+    [ProducesResponseType<IReadOnlyList<WorkOrderListItemDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<WorkOrderListItemDto>>> List(
+        [FromQuery(Name = "status")] WorkOrderStatus[]? status,
+        [FromQuery(Name = "origin")] WorkOrderOrigin[]? origin,
+        [FromQuery] int? limit)
+        => Ok(await _workOrderHandler.ListWorkOrders(
+            status ?? [], origin ?? [], limit));
 
     [HttpGet("{id:guid}")]
     [ProducesResponseType<WorkOrderDto>(StatusCodes.Status200OK)]
