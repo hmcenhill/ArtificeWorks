@@ -43,12 +43,16 @@ one transaction. Migration `Simulation`. **276 tests green (150 unit + 126 integ
    src/ArtificeWorks.Simulation` and watch orders pace themselves through with nobody driving. In
    Development the sim host turns pacing *and* generation on; `PUT /system/simulation` with
    `FailureRate: 0.4` starts the rework loop on a running factory with no restart.
-2. **Epic 11 — demo dashboard** (M5's headline). Epic 10 handed it: dwell time long enough to render,
-   `GET/PUT /system/simulation` for controls, `WorkOrder.Origin` to filter a board. Read models:
-   `/system/stats` (origin-split) and `/work-orders/{id}/timeline`. A live event feed wants a
-   subscriber on `work-order.*` (`faulted`/`completed` still have none — deliberate, Epic 11 consumes
-   them). New React frontend — least cross-cutting epic in a while; good one to keep to one story
-   per conversation.
+2. **Epic 11 — demo dashboard** (M5's headline) — **groomed 2026-07-23** into four stories, one per
+   run: [11.1](docs/Plan/EPIC%2011%20-%20Demo%20dashboard/11.1.md) read-only app (scaffold + board +
+   timeline; **new** `GET /work-orders` list read model — none exists today),
+   [11.2](docs/Plan/EPIC%2011%20-%20Demo%20dashboard/11.2.md) realtime (API-side `artifice.dashboard`
+   relay + SignalR hub; makes board/detail/feed live; finally consumes `faulted`/`completed`),
+   [11.3](docs/Plan/EPIC%2011%20-%20Demo%20dashboard/11.3.md) visitor affordances (create + decisions
+   + `/system/simulation` dials — all endpoints exist), [11.4](docs/Plan/EPIC%2011%20-%20Demo%20dashboard/11.4.md)
+   animated architecture diagram (presentation over 11.2's stream). New `web/` Vite+React+TS app at
+   repo root, outside the `.sln`; dev via Vite proxy (no CORS). Only 11.1–11.2 touch the backend.
+   Start a run from EPIC_11's implementation plan (working set listed per story).
 3. **Verify the telemetry against a live stack.** Everything is asserted at the *shape* level, but the
    LogQL/PromQL in the runbook has not been run against real Loki/Prometheus — field naming after OTLP
    ingest is where reality likely differs. ~30 min with the stack up confirms it.
@@ -74,6 +78,7 @@ is currently blocked on an undecided question. The few deliberate deferrals stil
 
 One line per entry; full detail is in each epic file and the git commit.
 
+- **2026-07-23** — Epic 11 groomed into 11.1–11.4 (read-only app → realtime → affordances → animated diagram). Key findings: no list/board query exists (11.1 adds `GET /work-orders`); `artifice.events` is a *direct* exchange so the feed binds each `work-order.*` key explicitly (11.2, first subscriber for `faulted`/`completed`). New `web/` SPA outside the solution. README status advanced (10 → Done, 11 → next up).
 - **2026-07-23** — Context/token-efficiency pass: created `docs/architecture.md` (settled invariants moved out of Open decisions); trimmed HANDOFF to a rolling window; **squashed 8 migrations into one `InitialCreate`** (no prod data; ~4k→1.9k lines of EF files); added a "don't read generated EF files" note + interview-seed idea (Epic 15) to the plan. Build + 150 unit tests green.
 - **2026-07-22** — Epic 10 complete: simulation host, pace ladder, `/system/simulation`, `OrderGenerator`, `WorkOrder.Origin`, `WorldResetService`. 276 tests. `f3d351a` (groom `f39fb05`).
 - **2026-07-22** — Epic 9 complete: traces/metrics/logs/health, `otel-lgtm`, `docs/observability.md`. 223 tests. `5ce9935` (groom `3917ee7`).
