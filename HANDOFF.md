@@ -7,7 +7,7 @@
 > permanent, move it to [docs/architecture.md](docs/architecture.md) (the settled invariants) or the
 > relevant epic file, and drop it from here. Commit this file with the work it describes.
 
-**Last updated:** 2026-07-23 (**Epic 11.2 done** — the dashboard is live over SignalR; M5 continues)
+**Last updated:** 2026-07-23 (**Epic 11.3 done** — the dashboard is interactive; only 11.4 left in M5's Epic 11)
 
 ## Current state
 
@@ -27,31 +27,40 @@ Finished epics (detail in each epic file, git history, and architecture.md):
 - **Epic 9 — observability** (M5): traces (outbox carries `traceparent`), metrics + `/system/stats`, structured logs, health probes, `otel-lgtm`.
 - **Epic 10 — simulation engine** (M5): the factory runs itself on a clock. `ArtificeWorks.Simulation` host, pace ladder in `OutboxDispatcher`, `GET/PUT /system/simulation`, `OrderGenerator`, `WorkOrder.Origin`, `WorldResetService`.
 
-**Epic 11 — demo dashboard** (M5, current) — **11.1 + 11.2 done.** New `web/` SPA (Vite + React +
-TS, outside the `.sln`): a **board** (orders in pipeline-stage columns, visitor/robot badged), an
-**order detail/timeline**, and now a **live event feed**. Dev talks to the API through Vite's proxy
-(`vite.config.ts` → `http://localhost:5181`), root-relative paths only, **no CORS**; `/hubs`
-proxied with `ws:true`.
+**Epic 11 — demo dashboard** (M5, current) — **11.1 + 11.2 + 11.3 done; only 11.4 left.** New
+`web/` SPA (Vite + React + TS, outside the `.sln`): a **board** (orders in pipeline-stage columns,
+visitor/robot badged), an **order detail/timeline** with **decision-moment actions**, a **live
+event feed**, a **create-order form**, and a **factory dials panel**. Dev talks to the API through
+Vite's proxy (`vite.config.ts` → `http://localhost:5181`), root-relative paths only, **no CORS**;
+`/hubs` proxied with `ws:true`.
 
-- **11.1 backend:** `GET /work-orders` board read model (slim `WorkOrderListItemDto`, projected,
-  repeatable `status`/`origin` filters, `limit` clamped [1,500] default 100, bounded live-world
-  default). `WorkOrderListItemDto.Status`/`Origin` serialize as enum *names* (property-level
-  converter) — confined to the one DTO the TS client mirrors so existing tests' numeric-enum
-  `ReadFromJsonAsync` stays green.
-- **11.2 realtime:** the API grows a **read-only, non-competing consumer** — `DashboardRelay`, a
-  hosted service on its own `artifice.dashboard` queue (auto-delete + `x-message-ttl`), bound to
-  `WorkOrderEventTypes.All` (the single enumerated list of published keys; a drift unit test keeps
-  it honest). It relays each event to browsers over the **`/hubs/dashboard` SignalR hub** as a slim
-  `DashboardEvent` (metadata + `workOrderId`). **Ack-always**, never retries/parks (a dropped
-  broadcast is a screen frame, not a unit of work); it's the **first subscriber for `faulted` /
-  `completed`**. First-connect is retried so a broker blip doesn't kill the API. The broadcast seam
-  is `IDashboardBroadcaster` (testable). Client: `RealtimeProvider` owns one auto-reconnecting
-  connection; board + detail reload on relevant events (debounced) + reconcile on reconnect — no
-  interval poll; feed streams newest-first, capped, visitor/robot tagged; header shows connection
-  state. **`usePolledData` deleted** (replaced by `useLiveData` + `useReloadOnStream`).
-- **Tests green:** 151 unit; `DashboardRelayTests` (3, Testcontainers broker: relay→SignalR client,
-  fan-out doesn't steal from the worker queue, broadcast-failure still acks) + the previously-unrun
-  `WorkOrderList*ApiTests` (5) all pass with Docker up.
+- **11.1 (settled; detail in the epic file):** `GET /work-orders` board read model — slim
+  `WorkOrderListItemDto`, repeatable `status`/`origin` filters, `limit` [1,500]/default 100, bounded
+  live-world default. Its `Status`/`Origin` serialize as enum *names* via a **property-level**
+  converter, **confined to this one DTO** so existing tests' numeric reads stay green (see 11.3's
+  adapter note — this confinement is why that adapter exists).
+- **11.2 (settled; detail in the epic file):** read-only, non-competing `DashboardRelay` on its own
+  auto-delete/TTL `artifice.dashboard` queue (bound to `WorkOrderEventTypes.All`, ack-always, first
+  subscriber for `faulted`/`completed`) → `/hubs/dashboard` SignalR hub → slim `DashboardEvent`.
+  Client: `RealtimeProvider` owns one auto-reconnecting connection; board + detail push-driven
+  (`useLiveData` + `useReloadOnStream`); capped live feed; header connection status.
+- **11.3 visitor affordances:** almost entirely frontend, driving the *ordinary* endpoints (no
+  dashboard back door). **Create** (`/create`) reads `GET /products` and `POST /work-orders` with an
+  `Idempotency-Key`, then routes to the new order's live timeline. **Decision moments** on the order
+  detail (state-legal only, API is authority): advance, hold/release, book carrier, record verdict,
+  cancel — attributed to `visitor`. **Dials** (`/controls`) round-trip `GET/PUT /system/simulation`
+  (PUT is whole-object), showing source, resolved rung and takes-effect, and flagged **global**. A
+  shared code-keyed ProblemDetails→sentence mapper (`web/src/api/problems.ts`). The **one backend
+  addition** was the finding the story predicted: no `GET /products` list existed → added
+  (`IProductRepository.List` → `ProductRepository` → `ProductHandler.ListProducts` → controller +
+  slim `ProductSummaryDto`). Two contained bits of by-hand mirroring: the full `WorkOrderDto`'s
+  **numeric** enums are decoded to names in one `client.ts` adapter (name converter stays confined
+  to the list DTO — don't widen it, it keeps existing tests green); carriers mirror
+  `ShippingConfiguration.DefaultCarriers` in `web/src/domain/carriers.ts` (no carriers endpoint).
+- **Tests green:** 151 unit; `DashboardRelayTests` (3) + `WorkOrderList*ApiTests` (5) +
+  `ProductApiTests` (5, now incl. the new `ListProducts_ReturnsCreatedProducts`) pass with Docker
+  up. `web` type-checks + builds. 11.3 added no new backend tests beyond the products-list one; the
+  decision-moment endpoints it drives were already covered by Epics 5–10.
 
 ## Next up
 
@@ -62,13 +71,11 @@ proxied with `ws:true`.
    `src/ArtificeWorks.Simulation`, and `cd web && npm run dev`. With generation on, the board should
    fill and **move on its own** and the feed should stream — nobody driving. `PUT /system/simulation`
    with `FailureRate: 0.4` starts the rework loop live and puts `faulted` lines on the feed.
-2. **Epic 11.3 — visitor affordances**
-   ([11.3](docs/Plan/EPIC%2011%20-%20Demo%20dashboard/11.3.md)): create an order from a template,
-   make the hybrid-model decisions (approve schedule, choose spec), turn 10.2's dials — all through
-   the *ordinary* endpoints (no dashboard back door). Then
-   [11.4](docs/Plan/EPIC%2011%20-%20Demo%20dashboard/11.4.md) the animated diagram, which is
-   presentation over **this** story's SignalR stream. One story per run; working set per story in
-   EPIC_11's implementation plan.
+2. **Epic 11.4 — the showpiece: animated architecture diagram**
+   ([11.4](docs/Plan/EPIC%2011%20-%20Demo%20dashboard/11.4.md)): presentation over 11.2's SignalR
+   stream (components pulse on real events) with strain colour from `/system/stats`. The last story
+   in Epic 11. Working set in EPIC_11's implementation plan: `docs/architecture.md` (topology to
+   draw), `SystemStatsController.cs` / `SystemStatsDto.cs`, and 11.2's SignalR client.
 3. **Verify the telemetry against a live stack.** Everything is asserted at the *shape* level, but the
    LogQL/PromQL in the runbook has not been run against real Loki/Prometheus — field naming after OTLP
    ingest is where reality likely differs. ~30 min with the stack up confirms it.
@@ -97,16 +104,12 @@ is currently blocked on an undecided question. The few deliberate deferrals stil
 
 One line per entry; full detail is in each epic file and the git commit.
 
+- **2026-07-23** — Epic 11.3 done: the dashboard is interactive. Create-order form (`GET /products` + `POST /work-orders` with `Idempotency-Key`, routes to live timeline); decision moments on the detail view (advance/hold/release/book-carrier/verdict/cancel, state-legal, driving the ordinary endpoints, API-authoritative); factory dials panel (round-trips `GET/PUT /system/simulation`, shows source + resolved rung + takes-effect, flagged global). Shared ProblemDetails→sentence mapper. **One backend addition** (the finding the story predicted): `GET /products` list. Two by-hand mirrors: numeric-enum `WorkOrderDto` decoded in a `client.ts` adapter (name converter stays list-DTO-only); carriers in `web/src/domain/carriers.ts`. 151 unit + 5 `ProductApiTests` (incl. new list test) green; web type-checks + builds.
 - **2026-07-23** — Epic 11.2 done: the dashboard is live. API-side `DashboardRelay` (read-only, non-competing consumer on auto-delete/TTL'd `artifice.dashboard`, bound to the enumerated `WorkOrderEventTypes.All`, ack-always) → `/hubs/dashboard` SignalR hub → `DashboardEvent`. First subscriber for `faulted`/`completed`. Client: one auto-reconnecting connection (`RealtimeProvider`), board + detail push-driven (`useLiveData` + `useReloadOnStream`, `usePolledData` deleted), live event feed (capped, visitor/robot tagged), header connection status. 151 unit + 3 relay integration tests (relay→client, fan-out, ack-on-failure) green; ran the previously-unrun 11.1 list tests too (green). Docs: messaging-topology relay section + queue table; web README.
 - **2026-07-23** — Epic 11.1 done: new `web/` SPA (Vite+React+TS, board + timeline, fetched-not-live, Vite proxy = no CORS) + `GET /work-orders` board read model (slim DTO, projected, `status`/`origin`/`limit` filters, bounded live-world default). Enum names on the list DTO only (property-level converter; global switch would break existing tests' `ReadFromJsonAsync`). 150 unit tests green; list integration tests written but need Docker.
 - **2026-07-23** — Epic 11 groomed into 11.1–11.4 (read-only app → realtime → affordances → animated diagram). Key findings: no list/board query exists (11.1 adds `GET /work-orders`); `artifice.events` is a *direct* exchange so the feed binds each `work-order.*` key explicitly (11.2, first subscriber for `faulted`/`completed`). New `web/` SPA outside the solution. README status advanced (10 → Done, 11 → next up).
 - **2026-07-23** — Context/token-efficiency pass: created `docs/architecture.md` (settled invariants moved out of Open decisions); trimmed HANDOFF to a rolling window; **squashed 8 migrations into one `InitialCreate`** (no prod data; ~4k→1.9k lines of EF files); added a "don't read generated EF files" note + interview-seed idea (Epic 15) to the plan. Build + 150 unit tests green.
 - **2026-07-22** — Epic 10 complete: simulation host, pace ladder, `/system/simulation`, `OrderGenerator`, `WorkOrder.Origin`, `WorldResetService`. 276 tests. `f3d351a` (groom `f39fb05`).
 - **2026-07-22** — Epic 9 complete: traces/metrics/logs/health, `otel-lgtm`, `docs/observability.md`. 223 tests. `5ce9935` (groom `3917ee7`).
-- **2026-07-22** — Epic 8 complete: outbox on both publishers, retry ladder, dead letters + replay, `Idempotency-Key`, `xmin`. 210 tests.
-- **2026-07-21** — Epic 7 complete: `Shipment`, book + dispatch → Completed, refusal → hold, timeline endpoint. 190 tests.
-- **2026-07-21** — Epic 6 complete: SKU lifecycle, verdicts, rework loop, attempt-scoped idempotency; fixed unmapped `CompletedBy`. 149 tests.
-- **2026-07-21** — Epic 5 complete: BOM + reservation + `CatalogSeeder`, atomic conditional decrement. 90 tests.
-- **2026-07-18** — Epic 4 complete: event contracts + RabbitMQ + correlation scopes + `docs/messaging-topology.md`. 76 tests.
-- **2026-07-18** — Epic 3 complete: cancellation, RFC 7807 ProblemDetails, integration coverage. 68 tests.
+- **2026-07-18→22** — Epics 3–8 complete (detail in each epic file + git): RFC 7807 + cancellation (3); event contracts + RabbitMQ + correlation (4); BOM + reservation + `CatalogSeeder` (5); SKU lifecycle + verdicts + rework loop (6); `Shipment` + book/dispatch + refusal→hold + timeline (7); outbox + retry ladder + dead letters/replay + `Idempotency-Key` + `xmin` (8).
 - **2026-07-17** — Planning interview: vision locked, renamed to ArtificeWorks, plan rewritten. Rename `21b1753`, plan `d218f43`.

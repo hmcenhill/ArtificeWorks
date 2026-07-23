@@ -75,7 +75,8 @@
       "Bash(grep -v -E '^\\(id|name|.*_id\\)$')",
       "Bash(npm --version)",
       "Bash(npm install *)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(xargs -I{} sh -c 'echo \"=== {} ===\"; cat \"{}\"')"
     ]
   }
 }

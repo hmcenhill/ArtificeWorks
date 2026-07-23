@@ -90,4 +90,32 @@ public class ProductApiTests : IClassFixture<ApiFixture>
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Equal("product_not_found", await response.ReadProblemCodeAsync());
     }
+
+    [Fact]
+    public async Task ListProducts_ReturnsCreatedProducts()
+    {
+        // Arrange — two products the list must include (alongside whatever the catalog seeded).
+        await _fixture.Client.PostAsJsonAsync("/products", new CreateProductRequest
+        {
+            Requestor = "John Tester",
+            ProductId = "Prod-List-001",
+            ProductName = "Clockwork Hare"
+        });
+        await _fixture.Client.PostAsJsonAsync("/products", new CreateProductRequest
+        {
+            Requestor = "John Tester",
+            ProductId = "Prod-List-002",
+            ProductName = "Clockwork Stag"
+        });
+
+        // Act
+        var response = await _fixture.Client.GetAsync("/products");
+
+        // Assert
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var products = await response.Content.ReadFromJsonAsync<List<ProductResponse>>();
+        Assert.NotNull(products);
+        Assert.Contains(products, p => p.ItemId == "Prod-List-001" && p.ItemName == "Clockwork Hare");
+        Assert.Contains(products, p => p.ItemId == "Prod-List-002" && p.ItemName == "Clockwork Stag");
+    }
 }

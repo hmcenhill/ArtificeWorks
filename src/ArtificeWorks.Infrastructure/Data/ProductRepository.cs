@@ -21,6 +21,16 @@ public class ProductRepository : IProductRepository
         return product;
     }
 
+    public async Task<IReadOnlyList<Product>> List()
+    {
+        // No tracking and no BOM: the board's create form only needs id + name. Catalog order is
+        // by id, which keeps the three seeded lines stable between requests.
+        return await _context.Products
+            .AsNoTracking()
+            .OrderBy(p => p.ItemId)
+            .ToListAsync();
+    }
+
     public async Task<Product?> GetWithBom(string id)
     {
         // No-tracking on purpose: the picking workflow only reads the BOM, and its reservation

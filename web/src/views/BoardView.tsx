@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { fetchWorkOrders } from "../api/client";
 import type { WorkOrderListItem, WorkOrderOrigin, WorkOrderStatus } from "../api/types";
@@ -98,8 +99,9 @@ export function BoardView() {
 
       {orders.length === 0 ? (
         <p className="notice">
-          Nothing on the floor yet. Create a work order (the API's <code>POST /work-orders</code>),
-          or let the simulation generate some.
+          Nothing on the floor yet. <Link to="/create" className="inline-link">Create a work order</Link>,
+          or turn generation on from the <Link to="/controls" className="inline-link">dials</Link> and
+          let the robots fill it.
         </p>
       ) : (
         <>

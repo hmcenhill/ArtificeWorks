@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 
 using ArtificeWorks.Api.Errors;
 using ArtificeWorks.Application.Commands;
+using ArtificeWorks.Application.Data;
 using ArtificeWorks.Application.Handlers;
 
 namespace ArtificeWorks.Api.Controllers;
@@ -13,6 +14,16 @@ namespace ArtificeWorks.Api.Controllers;
 public class ProductController(ProductHandler productHandler) : ApiControllerBase
 {
     private readonly ProductHandler _productHandler = productHandler;
+
+    /// <summary>
+    /// The catalog as a slim list — the three product lines by id and name, in catalog order.
+    /// The dashboard's create form (11.3) reads this to offer templates; a template picker chooses
+    /// a product, so this deliberately omits the bill of materials that <see cref="Get"/> carries.
+    /// </summary>
+    [HttpGet]
+    [ProducesResponseType<IReadOnlyList<ProductSummaryDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<ProductSummaryDto>>> List()
+        => Ok(await _productHandler.ListProducts());
 
     [HttpGet("{productId}")]
     [ProducesResponseType<GetProductResponse>(StatusCodes.Status200OK)]

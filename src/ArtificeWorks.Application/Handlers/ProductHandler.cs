@@ -14,6 +14,13 @@ public class ProductHandler
         _productRepository = productRepository;
     }
 
+    /// <summary>The catalog as slim summary rows, in catalog order — the create form's source (11.3).</summary>
+    public async Task<IReadOnlyList<ProductSummaryDto>> ListProducts()
+    {
+        var products = await _productRepository.List();
+        return products.Select(p => new ProductSummaryDto(p)).ToList();
+    }
+
     public async Task<GetProductResponse> GetProduct(string productId)
     {
         // Read with the BOM so GET /products/{id} shows what the product is made of.

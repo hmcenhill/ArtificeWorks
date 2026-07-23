@@ -1,7 +1,9 @@
 # ArtificeWorks — demo dashboard (`web/`)
 
-The factory made watchable: a Vite + React + TypeScript SPA that shows every live work order in
-its pipeline stage and drills into any one order's full timeline. Epic 11.
+The factory made watchable — and, since 11.3, drivable: a Vite + React + TypeScript SPA that shows
+every live work order in its pipeline stage, drills into any one order's full timeline, lets a
+visitor create orders and make the pipeline's human decisions, and turns the simulation's live
+dials. Epic 11.
 
 This app lives **outside** the .NET solution on purpose — a JS app is not a `.csproj`, so keeping
 it out leaves `dotnet build` / `dotnet test` and CI untouched. Where the built bundle is finally
@@ -61,6 +63,32 @@ npm run preview   # serve the built bundle locally
   Each line is tagged visitor vs robot when the board knows the order. It is a tail, not a log.
 - **Connection status** — always visible in the header (Live / Reconnecting… / Offline): a demo
   that silently went dead is worse than one that says so.
+
+## What's here (11.3 — visitor affordances)
+
+Everything below drives the **ordinary** API endpoints — there is no dashboard back door. A
+visitor's action *is* a pipeline action, indistinguishable from a simulated one except that it is
+tagged `Visitor`. Client-side gating (only offering state-legal actions) is UX; the API's 409/422
+contract is the real guard, and a rejection that races through is shown as a readable sentence via
+one code-keyed mapping (`src/api/problems.ts`).
+
+- **Create an order** (`/create`) — reads the catalog (`GET /products`, the one small backend
+  addition this story needed) and `POST /work-orders` with an `Idempotency-Key` (8.4), so a
+  double-submit makes one order. On success it routes to the new order's live timeline.
+- **Decision moments** on the order detail — surfaced only where the order's state allows:
+  approve/advance, put on hold / release, book a carrier (Delivery, auto-book off), record an
+  inspection verdict for a unit (Inspection), cancel. Attributed to `visitor`.
+- **The dials** (`/controls`) — `GET`/`PUT /system/simulation`: generation, failure rate, refusal
+  rate, pacing and its per-stage durations. Shows the setting's **source** (`configured` /
+  `overridden`), the **resolved rung** a pacing edit landed on, and how long until it takes effect.
+  The panel states plainly these are **global** — they retune the whole factory, not one order.
+
+> Note on enums: `GET /work-orders/{id}` (the full `WorkOrderDto`, which the detail view reads for
+> status + units + shipment) serializes enums as **numbers** — the name converter is deliberately
+> confined to the board list DTO to keep existing API tests green — so `src/api/client.ts` maps
+> those numbers back to names in one contained adapter. Carriers are mirrored by hand in
+> `src/domain/carriers.ts` (no carriers endpoint exists; the API stays the authority via
+> `unknown_carrier`).
 
 ### How realtime works
 

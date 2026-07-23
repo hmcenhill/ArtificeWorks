@@ -1,7 +1,9 @@
+import { useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { ApiError, fetchTimeline } from "../api/client";
-import type { TimelineEntry, TimelineKind, WorkOrderTimeline } from "../api/types";
+import { ApiError, fetchTimeline, fetchWorkOrder } from "../api/client";
+import type { TimelineEntry, TimelineKind, WorkOrder, WorkOrderTimeline } from "../api/types";
+import { OrderActions } from "../components/OrderActions";
 import { useLiveData } from "../hooks/useLiveData";
 import { useReloadOnStream } from "../hooks/useReloadOnStream";
 import { absoluteTime, relativeTime } from "../util/time";
@@ -32,9 +34,20 @@ export function OrderDetailView() {
     [id],
   );
 
-  // Live while open: an event for *this* order re-fetches its timeline, so a watched order animates
-  // through its stages. A reconnect reconciles. Events for other orders are ignored.
-  useReloadOnStream(reload, (event) => event.workOrderId === id);
+  // The order itself, for the decision moments — status, units and shipment drive which actions are
+  // legal. Fetched alongside the timeline so both stay live off the same stream.
+  const { data: order, reload: reloadOrder } = useLiveData<WorkOrder>(
+    (signal) => fetchWorkOrder(id, signal),
+    [id],
+  );
+
+  // Live while open: an event for *this* order re-fetches both the timeline and the order, so a
+  // watched order animates through its stages and its actions re-gate. A reconnect reconciles.
+  const reloadBoth = useCallback(() => {
+    reload();
+    reloadOrder();
+  }, [reload, reloadOrder]);
+  useReloadOnStream(reloadBoth, (event) => event.workOrderId === id);
 
   return (
     <section className="detail">
@@ -43,7 +56,7 @@ export function OrderDetailView() {
           ← Board
         </Link>
         {refreshing && <span className="board-live" aria-label="refreshing" />}
-        <button type="button" className="refresh-button" onClick={reload}>
+        <button type="button" className="refresh-button" onClick={reloadBoth}>
           ↻ Refresh
         </button>
       </div>
@@ -51,9 +64,12 @@ export function OrderDetailView() {
       {loading ? (
         <p className="notice">Loading the order's story…</p>
       ) : error ? (
-        <DetailError error={error} onRetry={reload} />
+        <DetailError error={error} onRetry={reloadBoth} />
       ) : (
-        <TimelineBody timeline={data!} />
+        <>
+          {order && <OrderActions order={order} onActed={reloadBoth} />}
+          <TimelineBody timeline={data!} />
+        </>
       )}
     </section>
   );
