@@ -7,7 +7,7 @@
 > permanent, move it to [docs/architecture.md](docs/architecture.md) (the settled invariants) or the
 > relevant epic file, and drop it from here. Commit this file with the work it describes.
 
-**Last updated:** 2026-07-23 (**Epic 11 complete** — all four stories done; the dashboard is live, interactive, and has its animated architecture showpiece. M5 wraps here; next is Epic 12)
+**Last updated:** 2026-07-24 (**Epic 12 groomed** into 12.1–12.3 — the failure-injection story files are written; implementation not started. Epic 11 complete; M5 wrapped, M6 begins here)
 
 ## Current state
 
@@ -40,9 +40,20 @@ Finished epics (detail in each epic file, git history, and architecture.md):
    also open `/architecture`** and watch the diagram pulse off the same stream — a paced order should
    visibly dwell in the broker; raise the failure rate and the workers→broker edge should flash red.
    This is the one part of 11.4 not yet seen against a live stack (build + type-check are green).
-2. **Epic 12 — failure injection** (M6, next): the diagram already *shows* a fault and a parked
-   message, so 12 becomes mostly giving the visitor the lever (fail an inspection, kill a pick,
-   poison a message) and letting the picture do the rest. Groom the epic file into stories.
+2. **Epic 12 — failure injection** (M6, next; **now groomed** into 12.1–12.3): the diagram already
+   *shows* a fault and a parked message, so 12 is mostly giving the visitor the lever and letting the
+   picture do the rest. **12.1** builds the backbone — an `injected_faults` DB registry, a guarded +
+   rate-limited `POST /system/chaos` (targets one order, opposite blast radius to 10.2's global
+   dials), a world-reset sweep — and proves it on the gentlest fault (fail an inspection → existing
+   rework loop). **12.2** lights up the two broker faults on that registry: a one-shot transient
+   throw that rides 8.2's retry ladder and *recovers on redelivery* ("kill a worker mid-task"), and a
+   `PoisonMessageException` throw that parks straight into `dead_letters`. Its one hard point: the
+   disarm must commit *outside* the rolled-back stage transaction, or the transient re-fires and
+   parks instead of recovering. **12.3** is the frontend money shot — contextual chaos buttons on the
+   order detail + the first browser view of `dead_letters` (list → read → replay). **Batching:** 12.1
+   solo first (it fixes the registry shape the others build on), then 12.2, then 12.3; 12.1+12.2 can
+   combine into one backend run if momentum is wanted. Subagent: an `Explore` for 12.2 to map each
+   stage's service-method choke point + the Testcontainers worker rig.
 3. **Verify the telemetry against a live stack.** Everything is asserted at the *shape* level, but the
    LogQL/PromQL in the runbook has not been run against real Loki/Prometheus — field naming after OTLP
    ingest is where reality likely differs. ~30 min with the stack up confirms it.
@@ -71,6 +82,7 @@ is currently blocked on an undecided question. The few deliberate deferrals stil
 
 One line per entry; full detail is in each epic file and the git commit.
 
+- **2026-07-24** — Epic 12 groomed into 12.1–12.3 (registry + fail-inspection → the two broker faults → dashboard chaos + DLQ inspector). Key findings from reading the code: the epic is genuinely "wiring existing reliability into the demo" — the recovery paths (retry ladder, parked queue, `dead_letters`, rework loop) all exist; the only new state is an `injected_faults` DB registry (cross-process: API arms, worker fires). Central decisions recorded: `/system/chaos` per-order (opposite blast radius to the global dials, same admin prefix); a fault fires once with the disarm committed *outside* the rolled-back stage transaction (12.2's one subtle correctness point); "kill a worker" is an honestly-labelled simulated death (throw-before-ack), not a real SIGKILL; rate limiter is the project's first. `web` has no DLQ view yet — 12.3 adds it. No code changed; README status advanced (11 → Done, 12 → next up).
 - **2026-07-23** — Epic 11.4 done → **Epic 11 complete**: the animated architecture diagram, the showpiece. Pure frontend, no backend added. Inline SVG topology (API·broker·Workers·Postgres) at `/architecture`; pulses driven entirely by 11.2's SignalR stream (every pulse a real event), event→hop table the only domain knowledge (`web/src/domain/hops.ts`); node strain from a ~5s `/system/stats` poll (`useSystemStats`/`healthFrom`) — outbox backlog, parked-message badge, low stock. One imperative `requestAnimationFrame` loop (no per-frame React), pooled dots, pulse cap, idle-park, clean unmount; reduced-motion + phone handled. `web` type-checks + builds; no backend/tests changed.
 - **2026-07-23** — Epic 11.3 done: the dashboard is interactive. Create-order form (`GET /products` + `POST /work-orders` with `Idempotency-Key`, routes to live timeline); decision moments on the detail view (advance/hold/release/book-carrier/verdict/cancel, state-legal, driving the ordinary endpoints, API-authoritative); factory dials panel (round-trips `GET/PUT /system/simulation`, shows source + resolved rung + takes-effect, flagged global). Shared ProblemDetails→sentence mapper. **One backend addition** (the finding the story predicted): `GET /products` list. Two by-hand mirrors: numeric-enum `WorkOrderDto` decoded in a `client.ts` adapter (name converter stays list-DTO-only); carriers in `web/src/domain/carriers.ts`. 151 unit + 5 `ProductApiTests` (incl. new list test) green; web type-checks + builds.
 - **2026-07-23** — Epic 11.2 done: the dashboard is live. API-side `DashboardRelay` (read-only, non-competing consumer on auto-delete/TTL'd `artifice.dashboard`, bound to the enumerated `WorkOrderEventTypes.All`, ack-always) → `/hubs/dashboard` SignalR hub → `DashboardEvent`. First subscriber for `faulted`/`completed`. Client: one auto-reconnecting connection (`RealtimeProvider`), board + detail push-driven (`useLiveData` + `useReloadOnStream`, `usePolledData` deleted), live event feed (capped, visitor/robot tagged), header connection status. 151 unit + 3 relay integration tests (relay→client, fan-out, ack-on-failure) green; ran the previously-unrun 11.1 list tests too (green). Docs: messaging-topology relay section + queue table; web README.
