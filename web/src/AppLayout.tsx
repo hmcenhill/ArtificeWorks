@@ -20,6 +20,9 @@ export function AppLayout() {
           <NavLink to="/" end className={({ isActive }) => (isActive ? "is-active" : "")}>
             Board
           </NavLink>
+          <NavLink to="/architecture" className={({ isActive }) => (isActive ? "is-active" : "")}>
+            Architecture
+          </NavLink>
           <NavLink to="/create" className={({ isActive }) => (isActive ? "is-active" : "")}>
             Create order
           </NavLink>

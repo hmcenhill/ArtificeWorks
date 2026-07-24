@@ -5,6 +5,7 @@ import type {
   ShipmentStatus,
   SimulationSettings,
   StockUnit,
+  SystemStats,
   UnitStatus,
   WorkOrder,
   WorkOrderListItem,
@@ -241,6 +242,15 @@ export function bookShipment(id: string, carrier?: string): Promise<void> {
 /** The factory's live dials (10.2). */
 export function fetchSimulation(signal?: AbortSignal): Promise<SimulationSettings> {
   return getJson<SimulationSettings>("/system/simulation", signal);
+}
+
+/**
+ * The factory's vital signs (9.2), served from the same cached snapshot the metrics read — so no
+ * request here issues a database query. The architecture diagram (11.4) slow-polls this for the
+ * strain tint on its nodes; it never drives the *pulses*, which come from the live event stream.
+ */
+export function fetchStats(signal?: AbortSignal): Promise<SystemStats> {
+  return getJson<SystemStats>("/system/stats", signal);
 }
 
 /**

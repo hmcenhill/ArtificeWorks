@@ -4,6 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
 import { AppLayout } from "./AppLayout";
 import { RealtimeProvider } from "./realtime/RealtimeProvider";
+import { ArchitectureView } from "./views/ArchitectureView";
 import { BoardView } from "./views/BoardView";
 import { ControlsView } from "./views/ControlsView";
 import { CreateOrderView } from "./views/CreateOrderView";
@@ -22,6 +23,7 @@ createRoot(root).render(
         <Routes>
           <Route element={<AppLayout />}>
             <Route index element={<BoardView />} />
+            <Route path="architecture" element={<ArchitectureView />} />
             <Route path="create" element={<CreateOrderView />} />
             <Route path="controls" element={<ControlsView />} />
             <Route path="orders/:id" element={<OrderDetailView />} />

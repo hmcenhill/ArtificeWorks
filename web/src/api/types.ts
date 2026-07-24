@@ -109,6 +109,37 @@ export interface WorkOrder {
   shipment: Shipment | null;
 }
 
+/**
+ * Mirrors Application.Data.SystemStatsDto — the factory's vital signs as plain JSON (9.2), the
+ * slow-polled source of the architecture diagram's node *strain* tint (11.4). The dictionaries key
+ * on enum names (status / origin). Every `*SinceStart` is a monotonic process counter.
+ */
+export interface SystemStats {
+  asOfUtc: string;
+  /** False until the first snapshot has been taken — zeros that mean "not yet", not "none". */
+  fresh: boolean;
+  workOrdersByStatus: Record<string, number>;
+  workOrdersTotal: number;
+  workOrdersInFlight: number;
+  workOrdersByOrigin: Record<string, number>;
+  workOrdersInFlightByOrigin: Record<string, number>;
+  /** Unsent outbox rows — a publish backlog. THE broker/API strain signal. */
+  outboxUnsent: number;
+  /** Age in seconds of the oldest unsent outbox row; 0 when there is none. */
+  outboxLagSeconds: number;
+  /** Parked messages nobody has replayed — the trouble path made countable. */
+  deadLettersUnreplayed: number;
+  /** On-hand stock as a fraction of seed levels: 1.0 is a full factory (10.4). */
+  stockLevelRatio: number;
+  messagesHandledSinceStart: number;
+  messagesRetriedSinceStart: number;
+  messagesParkedSinceStart: number;
+  messagesReplayedSinceStart: number;
+  messagesPacedSinceStart: number;
+  outboxPublishedSinceStart: number;
+  ordersRetiredSinceStart: number;
+}
+
 /** The body of POST /work-orders. Origin defaults to Visitor server-side; the form always sends it. */
 export interface CreateWorkOrderBody {
   requestor: string;

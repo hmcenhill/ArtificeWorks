@@ -1122,6 +1122,280 @@ button {
   color: var(--text-dim);
 }
 
+/* ---- Architecture diagram (the showpiece, 11.4) ---- */
+.arch {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.arch-toolbar {
+  margin-bottom: 1rem;
+}
+
+.arch-header h1 {
+  margin: 0 0 0.4rem;
+  font-size: 1.3rem;
+}
+
+.arch-caption {
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  margin: 0 0 1rem;
+  max-width: 72ch;
+}
+
+.arch-caption code {
+  color: var(--accent);
+  font-size: 0.85em;
+}
+
+.arch-stage {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.5rem;
+}
+
+.arch-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Edges: a dim base path, a bright overlay the animation fades in over it. */
+.arch-edge {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 2;
+}
+
+.arch-edge-persist {
+  stroke-dasharray: 4 5;
+  stroke: var(--border);
+}
+
+.arch-arrowhead {
+  fill: var(--border-strong);
+}
+
+.arch-edge-label {
+  fill: var(--text-faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.edge-flow {
+  fill: none;
+  stroke-width: 3.5;
+  stroke-linecap: round;
+  /* opacity is driven imperatively by the rAF loop */
+}
+
+/* Nodes: a static box whose stroke says strain; the halo behind it is the pulse glow. */
+.node-box {
+  fill: var(--bg-card);
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+  transition: stroke 0.4s ease, fill 0.4s ease;
+}
+
+.node-box-rim {
+  fill: var(--bg-column);
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+  transition: stroke 0.4s ease;
+}
+
+.node-title {
+  fill: var(--text);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.node-sub {
+  fill: var(--text-dim);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+
+.arch-node-broker .node-box {
+  fill: var(--bg-column);
+}
+
+/* Strain tint from /system/stats — the slow, factory-health signal. */
+.arch-node[data-strain="strained"] .node-box,
+.arch-node[data-strain="strained"] .node-box-rim {
+  stroke: var(--hold);
+}
+.arch-node[data-strain="strained"] .node-title {
+  fill: var(--hold);
+}
+.arch-node[data-strain="trouble"] .node-box,
+.arch-node[data-strain="trouble"] .node-box-rim {
+  stroke: var(--fault);
+  fill: rgba(229, 83, 75, 0.08);
+}
+.arch-node[data-strain="trouble"] .node-title {
+  fill: var(--fault);
+}
+
+/* Parked-message badge on the broker. */
+.dead-letter-badge circle {
+  fill: var(--fault);
+  stroke: var(--bg-raised);
+  stroke-width: 2;
+}
+.dead-letter-badge text {
+  fill: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* The pulse glow behind a node and the traveling dot, tinted by the event's tone. */
+.node-halo {
+  fill: none;
+  stroke-width: 3;
+}
+.node-halo.tone-flow,
+.pulse-dot.tone-flow {
+  stroke: var(--accent);
+  fill: var(--accent);
+}
+.node-halo.tone-good,
+.pulse-dot.tone-good {
+  stroke: var(--pass);
+  fill: var(--pass);
+}
+.node-halo.tone-info,
+.pulse-dot.tone-info {
+  stroke: var(--visitor);
+  fill: var(--visitor);
+}
+.node-halo.tone-rework,
+.pulse-dot.tone-rework {
+  stroke: var(--hold);
+  fill: var(--hold);
+}
+.node-halo.tone-fault,
+.pulse-dot.tone-fault {
+  stroke: var(--fault);
+  fill: var(--fault);
+}
+
+.edge-flow.tone-flow {
+  stroke: var(--accent);
+}
+.edge-flow.tone-good {
+  stroke: var(--pass);
+}
+.edge-flow.tone-info {
+  stroke: var(--visitor);
+}
+.edge-flow.tone-rework {
+  stroke: var(--hold);
+}
+.edge-flow.tone-fault {
+  stroke: var(--fault);
+}
+
+.pulse-dot {
+  stroke: none;
+}
+
+/* ---- Legend + stats strip ---- */
+.arch-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  list-style: none;
+  padding: 0.8rem 0 0;
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+.arch-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.legend-swatch {
+  width: 14px;
+  height: 4px;
+  border-radius: 2px;
+}
+.legend-swatch.tone-flow {
+  background: var(--accent);
+}
+.legend-swatch.tone-good {
+  background: var(--pass);
+}
+.legend-swatch.tone-rework {
+  background: var(--hold);
+}
+.legend-swatch.tone-fault {
+  background: var(--fault);
+}
+
+.legend-strain {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 2px solid;
+  background: transparent;
+}
+.legend-strain.strain-strained {
+  border-color: var(--hold);
+}
+.legend-strain.strain-trouble {
+  border-color: var(--fault);
+  background: rgba(229, 83, 75, 0.12);
+}
+
+.arch-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin: 1rem 0 0;
+}
+
+.arch-stats-waiting {
+  color: var(--text-faint);
+  font-size: 0.85rem;
+  margin-top: 1rem;
+}
+
+.arch-stat {
+  flex: 1 1 120px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.7rem;
+}
+.arch-stat.is-strained {
+  border-color: var(--hold);
+}
+.arch-stat dt {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+}
+.arch-stat dd {
+  margin: 0.1rem 0 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text);
+}
+.arch-stat.is-strained dd {
+  color: var(--hold);
+}
+.arch-stat-hint {
+  font-size: 0.7rem;
+  color: var(--text-faint);
+}
+
 /* ---- Phone ---- */
 @media (max-width: 900px) {
   .board-layout {
