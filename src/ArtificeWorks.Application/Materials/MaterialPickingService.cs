@@ -1,3 +1,4 @@
+using ArtificeWorks.Application.Chaos;
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Messaging;
 using ArtificeWorks.Application.Messaging.Events;
@@ -34,21 +35,30 @@ public sealed class MaterialPickingService
     private readonly IMaterialReservationRepository _reservationRepository;
     private readonly IEventPublisher _eventPublisher;
     private readonly ArtificeWorksMetrics _metrics;
+    private readonly IInjectedFaultRepository? _injectedFaults;
     private readonly ILogger<MaterialPickingService> _logger;
 
+    /// <param name="injectedFaults">
+    /// Epic 12's fault registry. Picking is where the two <em>broker-facing</em> faults fire (12.2):
+    /// a visitor can arm this order to throw once mid-pick (transient → retry ladder → recover) or to
+    /// be declared unprocessable (poison → parked → dead letter). Null (a unit test, or any host
+    /// without chaos wired) means no order is ever broken here.
+    /// </param>
     public MaterialPickingService(
         IWorkOrderRepository workOrderRepository,
         IProductRepository productRepository,
         IMaterialReservationRepository reservationRepository,
         IEventPublisher eventPublisher,
         ArtificeWorksMetrics metrics,
-        ILogger<MaterialPickingService> logger)
+        ILogger<MaterialPickingService> logger,
+        IInjectedFaultRepository? injectedFaults = null)
     {
         _workOrderRepository = workOrderRepository;
         _productRepository = productRepository;
         _reservationRepository = reservationRepository;
         _eventPublisher = eventPublisher;
         _metrics = metrics;
+        _injectedFaults = injectedFaults;
         _logger = logger;
     }
 
@@ -56,6 +66,14 @@ public sealed class MaterialPickingService
     {
         // Makes the consumer span findable by the one identifier a visitor has (9.1).
         ArtificeWorksTelemetry.StampWorkOrder(workOrderId);
+
+        // 12.2: the single choke point for the stage. Fire any armed broker fault here — before the
+        // pick's work opens a transaction — and throw. Because the consume is its own committed write
+        // (TryConsume runs outside any stage transaction), the throw that follows rolls back nothing
+        // and the redelivery finds the fault disarmed, which is what makes a transient recover instead
+        // of re-firing forever. The throw lands in the consumer's existing failure taxonomy; there is
+        // no chaos-mode code path.
+        await FireBrokerFaultIfArmed(workOrderId, cancellationToken);
 
         var workOrder = await _workOrderRepository.GetWithHistory(workOrderId);
         if (workOrder is null)
@@ -106,6 +124,54 @@ public sealed class MaterialPickingService
             ReservationOutcome.AlreadyReserved => AlreadyPicked(workOrderId, reservedUtc: null),
             _ => throw new InvalidOperationException($"Unhandled reservation outcome {commit.Outcome}.")
         };
+    }
+
+    /// <summary>
+    /// Fires an armed broker fault against this order, exactly once (12.2). A no-op — and a single
+    /// cheap indexed lookup — when nothing is armed, which is almost always. When one is armed, this
+    /// throws, and the kind decides where the message goes:
+    /// <list type="bullet">
+    ///   <item><description><see cref="InjectedFaultKind.TransientOnce"/>: an ordinary throw the
+    ///     consumer classifies as transient. The order stays Scheduled, the message climbs a rung of
+    ///     8.2's ladder, and the redelivery re-runs this method with the fault now disarmed —
+    ///     completing the pick instead of re-firing.</description></item>
+    ///   <item><description><see cref="InjectedFaultKind.Poison"/>: the consumer parks it straight
+    ///     into <c>dead_letters</c>, no retries, where a human replays it (8.3). The replayed message
+    ///     also finds the fault disarmed.</description></item>
+    /// </list>
+    /// The consume (<see cref="IInjectedFaultRepository.TryConsume"/>) is a standalone committed
+    /// write, run here before any of the pick's work opens a transaction, so a rolled-back stage
+    /// cannot un-fire it — the one subtle correctness point of the epic.
+    /// </summary>
+    private async Task FireBrokerFaultIfArmed(Guid workOrderId, CancellationToken cancellationToken)
+    {
+        if (_injectedFaults is null)
+        {
+            return;
+        }
+
+        if (await _injectedFaults.TryConsume(workOrderId, InjectedFaultKind.TransientOnce, cancellationToken))
+        {
+            // Warning, not Error: a fired transient is the pipeline about to visibly recover, which is
+            // exactly the line 12.2's audience is watching for.
+            _logger.LogWarning(
+                "Work order {WorkOrderId} is failing its pick once by injected fault (transient); "
+                + "the message will climb the retry ladder and recover on redelivery.", workOrderId);
+
+            throw new InjectedFaultException(InjectedFaultKind.TransientOnce,
+                $"Injected transient fault: work order {workOrderId} failed its pick on purpose (Epic 12.2). "
+                + "It recovers on redelivery.");
+        }
+
+        if (await _injectedFaults.TryConsume(workOrderId, InjectedFaultKind.Poison, cancellationToken))
+        {
+            _logger.LogWarning(
+                "Work order {WorkOrderId} is being poisoned by injected fault; the message will park "
+                + "straight into dead_letters awaiting a replay.", workOrderId);
+
+            throw new InjectedFaultException(InjectedFaultKind.Poison,
+                $"Injected poison fault: work order {workOrderId} was declared unprocessable on purpose (Epic 12.2).");
+        }
     }
 
     /// <summary>

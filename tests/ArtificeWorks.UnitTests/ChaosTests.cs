@@ -71,6 +71,48 @@ public class ChaosTests
         Assert.Equal(ChaosArmOutcome.TargetNotInjectable, result.Outcome);
     }
 
+    [Theory]
+    [InlineData(InjectedFaultKind.TransientOnce, WorkOrderStatus.Intake)]
+    [InlineData(InjectedFaultKind.TransientOnce, WorkOrderStatus.Scheduled)]
+    [InlineData(InjectedFaultKind.TransientOnce, WorkOrderStatus.OnHold)]
+    [InlineData(InjectedFaultKind.Poison, WorkOrderStatus.Intake)]
+    [InlineData(InjectedFaultKind.Poison, WorkOrderStatus.Scheduled)]
+    [InlineData(InjectedFaultKind.Poison, WorkOrderStatus.OnHold)]
+    public async Task A_broker_fault_can_be_armed_up_to_and_including_the_picking_stage(
+        InjectedFaultKind kind, WorkOrderStatus status)
+    {
+        var order = InFlightOrder(status);
+        var faults = new FakeInjectedFaultRepository();
+        var service = ServiceFor(order, faults);
+
+        var result = await service.Arm(order.Id, kind, "visitor");
+
+        Assert.Equal(ChaosArmOutcome.Armed, result.Outcome);
+        Assert.True(await faults.IsArmed(order.Id, kind));
+    }
+
+    [Theory]
+    [InlineData(InjectedFaultKind.TransientOnce, WorkOrderStatus.InProcess)]
+    [InlineData(InjectedFaultKind.TransientOnce, WorkOrderStatus.Inspection)]
+    [InlineData(InjectedFaultKind.TransientOnce, WorkOrderStatus.Delivery)]
+    [InlineData(InjectedFaultKind.Poison, WorkOrderStatus.InProcess)]
+    [InlineData(InjectedFaultKind.Poison, WorkOrderStatus.Inspection)]
+    [InlineData(InjectedFaultKind.Poison, WorkOrderStatus.Delivery)]
+    public async Task A_broker_fault_is_refused_once_the_order_has_passed_the_picking_stage(
+        InjectedFaultKind kind, WorkOrderStatus status)
+    {
+        // The two broker faults fire on the pick (work-order.scheduled); an order already building or
+        // beyond would never hit that consult point, so arming it is refused rather than left a dud.
+        var order = InFlightOrder(status);
+        var faults = new FakeInjectedFaultRepository();
+        var service = ServiceFor(order, faults);
+
+        var result = await service.Arm(order.Id, kind, "visitor");
+
+        Assert.Equal(ChaosArmOutcome.TargetNotInjectable, result.Outcome);
+        Assert.False(await faults.IsArmed(order.Id, kind));
+    }
+
     // -------------------------------------------------------------------------- helpers
 
     private static ChaosService ServiceFor(WorkOrder order, IInjectedFaultRepository faults) =>

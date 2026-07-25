@@ -27,8 +27,10 @@ public sealed record ChaosArmResult(ChaosArmOutcome Outcome, InjectedFault? Faul
 /// <para>
 /// <strong>A fault is data the pipeline consults, not a back door that bypasses it.</strong> The
 /// inspection worker reads an armed <see cref="InjectedFaultKind.FailInspection"/> the same way it
-/// reads the failure rate; recovery then runs entirely on the existing rework/Fault loop. There is
-/// no "chaos mode" branch anywhere in the pipeline.
+/// reads the failure rate, and the picking worker reads a
+/// <see cref="InjectedFaultKind.TransientOnce"/> or <see cref="InjectedFaultKind.Poison"/> before it
+/// draws stock (12.2). Recovery then runs entirely on the existing rework/Fault loop, retry ladder
+/// and parked queue. There is no "chaos mode" branch anywhere in the pipeline.
 /// </para>
 /// </summary>
 public sealed class ChaosService
@@ -107,6 +109,17 @@ public sealed class ChaosService
         if (kind is InjectedFaultKind.FailInspection && status is WorkOrderStatus.Delivery)
         {
             reason = "Work order has already passed inspection and reached Delivery; there is no inspection left to fail.";
+            return false;
+        }
+
+        // 12.2's two broker faults fire at the picking stage, which runs on work-order.scheduled. Once
+        // the order has moved into production or beyond, that consult point is behind it and an armed
+        // fault would sit unfired until the world reset swept it — so refuse it at the door rather than
+        // arm a dud. (Intake, Scheduled and OnHold are all at or before the pick, so all still fire.)
+        if (kind is InjectedFaultKind.TransientOnce or InjectedFaultKind.Poison
+            && status is WorkOrderStatus.InProcess or WorkOrderStatus.Inspection or WorkOrderStatus.Delivery)
+        {
+            reason = $"Work order is {status} and has already passed the picking stage, where a worker fault fires.";
             return false;
         }
 

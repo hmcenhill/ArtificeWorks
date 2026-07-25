@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 
+using ArtificeWorks.Application.Chaos;
 using ArtificeWorks.Application.Messaging;
 using ArtificeWorks.Application.Observability;
 using ArtificeWorks.Infrastructure.Messaging;
@@ -30,11 +31,17 @@ namespace ArtificeWorks.Workers.Consuming;
 /// <list type="bullet">
 ///   <item><description><strong>business outcome</strong> → ack, unchanged since 4.2</description></item>
 ///   <item><description><strong>transient</strong> (DB blip, broker hiccup, 8.1's concurrency
-///     conflict) → next rung of the delay ladder, ack the original</description></item>
-///   <item><description><strong>poison</strong> (won't deserialize, no handler) → straight to
-///     <c>artifice.parked</c>, no retries — replaying a parse failure is the same failure
-///     again</description></item>
+///     conflict, or 12.2's injected <c>TransientOnce</c>) → next rung of the delay ladder, ack the
+///     original</description></item>
+///   <item><description><strong>poison</strong> (won't deserialize, no handler, or 12.2's injected
+///     <c>Poison</c>) → straight to <c>artifice.parked</c>, no retries — replaying a parse failure is
+///     the same failure again</description></item>
 /// </list>
+/// <para>
+/// Epic 12.2 arms the last item of each pair: a visitor can inject a fault against one order that a
+/// pipeline stage throws on. It rides these <em>same</em> branches rather than a chaos-specific one —
+/// the whole point being that the recovery you watch is the real machinery.
+/// </para>
 /// <para>
 /// Every branch acks the delivery it was given. That is what makes a poison message unable to
 /// wedge the queue: with prefetch 1, a message that threw and requeued would be redelivered
@@ -181,6 +188,16 @@ public sealed class RabbitMqConsumerService : BackgroundService
                 outcome = "parked";
                 activity?.SetStatus(ActivityStatusCode.Error, e.Message);
                 await ParkAsync(eventArgs, eventType, attempt, e, "the message is permanently unhandleable");
+            }
+            catch (InjectedFaultException e) when (e.Kind == InjectedFaultKind.Poison)
+            {
+                // A visitor-armed poison (12.2). Treated exactly as a genuine one — straight to the
+                // parked queue, no retries — because "unprocessable" is unprocessable however it got
+                // that way. A TransientOnce InjectedFaultException does NOT match this filter and
+                // falls through to the transient branch below, where it climbs the ladder and recovers.
+                outcome = "parked";
+                activity?.SetStatus(ActivityStatusCode.Error, e.Message);
+                await ParkAsync(eventArgs, eventType, attempt, e, "an injected poison fault");
             }
             catch (Exception e)
             {

@@ -246,6 +246,40 @@ normally. That is asserted, not assumed.
 delivery for an unknown one means the topology and the handler set have drifted apart. Acking that
 away silently is how a message disappears without anyone finding out; it parks instead.
 
+### Injected faults ride these same paths (Epic 12.2)
+
+Failure injection adds **no topology** — no queue, no exchange, no routing key. A visitor arms a
+fault against one order in the `injected_faults` registry (see the dials section's `POST
+/system/chaos`), and a pipeline stage *consults* that registry at a single choke point and throws,
+landing the message in the classification above exactly as a real failure would.
+
+```mermaid
+flowchart LR
+    reg[("injected_faults<br/>armed per order")]
+    pick["picking<br/>(top of the pick,<br/>before any work commits)"] -. "consult + fire once" .-> reg
+    insp["inspection<br/>(verdict input, 12.1)"] -. "consult + fire once" .-> reg
+    pick -->|"TransientOnce → throw"| ladder[["retry ladder →<br/>redeliver → recover"]]
+    pick -->|"Poison → throw"| park[["artifice.parked →<br/>dead_letters → replay"]]
+    insp -->|"FailInspection → scrap"| rework[["rework / Fault<br/>(domain, no broker)"]]
+```
+
+- **The consult is one place per stage.** For the two broker faults it is the **top of the pick**
+  (`MaterialPickingService`, on `work-order.scheduled`), before the reservation transaction opens.
+  For `FailInspection` it is the inspection verdict (12.1), which never touches the broker.
+- **`TransientOnce`** throws an ordinary exception → the **transient** branch → the message climbs a
+  rung and is redelivered. The consult *consumed* the fault on a separate committed write
+  (`TryConsume`, outside the stage transaction), so the redelivery finds it disarmed and the pick
+  completes — recover, not re-fire. This is the epic's one subtle correctness point: consume the
+  fault *outside* the transaction the throw rolls back, or it re-arms every redelivery and the order
+  parks instead of recovering.
+- **`Poison`** throws an `InjectedFaultException` the consumer routes straight to `artifice.parked`,
+  identical to a genuine `PoisonMessageException` — one delivery, no ladder. It becomes a
+  `dead_letters` row carrying the order id and the injected reason, and a human replay (8.3) runs
+  clean because the fault is already spent.
+- **A fault fires exactly once.** `TryConsume` is a conditional `UPDATE … FOR UPDATE SKIP LOCKED`
+  that marks an unfired row and returns whether it did, so a redelivery, a replay or a reset can
+  never re-trigger it, and one order's fault never touches another on the same queue.
+
 ## Pacing (Epic 10)
 
 The retry ladder has a twin: a **pace ladder** that adds *time on purpose* to the happy path, so a
