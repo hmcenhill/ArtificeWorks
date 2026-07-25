@@ -29,6 +29,9 @@ export function AppLayout() {
           <NavLink to="/controls" className={({ isActive }) => (isActive ? "is-active" : "")}>
             Dials
           </NavLink>
+          <NavLink to="/dead-letters" className={({ isActive }) => (isActive ? "is-active" : "")}>
+            Dead letters
+          </NavLink>
         </nav>
         <ConnectionStatus />
       </header>

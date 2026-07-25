@@ -1,7 +1,12 @@
 import { ApiProblem, type ProblemDetails } from "./problems";
 import type {
+  ChaosArmed,
   CreateWorkOrderBody,
+  DeadLetterDetail,
+  DeadLetterPage,
+  InjectedFaultKind,
   ProductSummary,
+  ReplayResult,
   ShipmentStatus,
   SimulationSettings,
   StockUnit,
@@ -260,4 +265,57 @@ export function fetchStats(signal?: AbortSignal): Promise<SystemStats> {
  */
 export function updateSimulation(settings: SimulationSettings): Promise<SimulationSettings> {
   return sendJson<SimulationSettings>("PUT", "/system/simulation", settings);
+}
+
+// ---- Chaos: the one genuinely new lever (Epic 12). Unlike the decision moments above, arming a
+// fault is *not* an ordinary pipeline action — you cannot break an order without it. But the
+// recovery it triggers runs entirely on Epic 8's existing paths; this endpoint only writes the
+// armed row the pipeline later consults. Per-order, rate-limited, honestly a sabotage button.
+
+/**
+ * Arms one of the three faults against a single order. Refuses an order that doesn't exist
+ * (`chaos_target_not_found`, 404) or whose stage can't take this fault (`chaos_target_not_injectable`,
+ * 409) — the same state-legality the client gates on for UX, with the API as the authority. May also
+ * throw a 429 when the rate limiter (5 / 10s per IP) trips.
+ */
+export function armChaos(workOrderId: string, kind: InjectedFaultKind): Promise<ChaosArmed> {
+  return sendJson<ChaosArmed>("POST", "/system/chaos", { workOrderId, kind });
+}
+
+// ---- The dead letters (8.3): the trouble path, made browsable. The first UI over `dead_letters`.
+
+export interface DeadLetterQuery {
+  page?: number;
+  pageSize?: number;
+  workOrderId?: string;
+  replayed?: boolean;
+}
+
+/** What has parked, newest first — optionally scoped to one order or to (un)replayed rows. */
+export function fetchDeadLetters(
+  query: DeadLetterQuery = {},
+  signal?: AbortSignal,
+): Promise<DeadLetterPage> {
+  const params = new URLSearchParams();
+  if (query.page != null) params.set("page", String(query.page));
+  if (query.pageSize != null) params.set("pageSize", String(query.pageSize));
+  if (query.workOrderId) params.set("workOrderId", query.workOrderId);
+  if (query.replayed != null) params.set("replayed", String(query.replayed));
+  const q = params.toString();
+  return getJson<DeadLetterPage>(`/system/dead-letters${q ? `?${q}` : ""}`, signal);
+}
+
+/** One dead letter in full, payload included — what a human reads before deciding to replay. */
+export function fetchDeadLetter(id: string, signal?: AbortSignal): Promise<DeadLetterDetail> {
+  return getJson<DeadLetterDetail>(`/system/dead-letters/${id}`, signal);
+}
+
+/**
+ * Puts a parked message back on the pipeline via the outbox, retry ladder reset to attempt 1.
+ * Replaying something already replayed is a 409 `dead_letter_already_replayed` unless `force` — the
+ * "did the first one work?" second click, not a safety interlock (the dedupe keys make a redelivery
+ * land on an already-done stage and skip). Returns the 202 body.
+ */
+export function replayDeadLetter(id: string, force = false): Promise<ReplayResult> {
+  return sendJson<ReplayResult>("POST", `/system/dead-letters/${id}/replay${force ? "?force=true" : ""}`, {});
 }

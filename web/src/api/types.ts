@@ -140,6 +140,59 @@ export interface SystemStats {
   ordersRetiredSinceStart: number;
 }
 
+/**
+ * Mirrors Application.Chaos.InjectedFaultKind — the three levers a visitor can arm against one
+ * order (Epic 12). Crosses the wire as its *name* (the enum has a scoped string converter), so
+ * unlike WorkOrderDto's enums these need no numeric decoding.
+ */
+export type InjectedFaultKind = "FailInspection" | "TransientOnce" | "Poison";
+
+/** Mirrors Api.Controllers.ChaosArmedDto — what was armed, echoed back so the UI can confirm. */
+export interface ChaosArmed {
+  faultId: string;
+  workOrderId: string;
+  kind: InjectedFaultKind;
+  armedUtc: string;
+  armedBy: string;
+}
+
+/**
+ * Mirrors Application.Data.DeadLetterSummaryDto — one row of the dead-letter list (8.3), shaped
+ * for the table a person scans: what failed, whose order, how hard the system tried, and the first
+ * line of why. `replayedUtc` non-null means it has already been put back.
+ */
+export interface DeadLetterSummary {
+  id: string;
+  eventType: string;
+  correlationId: string;
+  workOrderId: string | null;
+  attempts: number;
+  error: string;
+  parkedUtc: string;
+  replayedUtc: string | null;
+  replayCount: number;
+}
+
+/** Mirrors Application.Data.DeadLetterDetailDto — the summary plus the full payload, for reading. */
+export interface DeadLetterDetail extends DeadLetterSummary {
+  payload: string;
+}
+
+/** Mirrors Application.Data.DeadLetterPageDto — a page of dead letters, newest first. */
+export interface DeadLetterPage {
+  items: DeadLetterSummary[];
+  page: number;
+  pageSize: number;
+  totalCount: number;
+}
+
+/** Mirrors Application.Recovery.ReplayResult — the 202 body of a replay. `outcome` is a numeric
+ *  enum on the wire (the global convention); the UI only reads the human `summary`. */
+export interface ReplayResult {
+  outcome: number;
+  summary: string;
+}
+
 /** The body of POST /work-orders. Origin defaults to Visitor server-side; the form always sends it. */
 export interface CreateWorkOrderBody {
   requestor: string;

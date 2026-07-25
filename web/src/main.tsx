@@ -8,6 +8,8 @@ import { ArchitectureView } from "./views/ArchitectureView";
 import { BoardView } from "./views/BoardView";
 import { ControlsView } from "./views/ControlsView";
 import { CreateOrderView } from "./views/CreateOrderView";
+import { DeadLetterDetailView } from "./views/DeadLetterDetailView";
+import { DeadLettersView } from "./views/DeadLettersView";
 import { OrderDetailView } from "./views/OrderDetailView";
 import "./index.css";
 
@@ -26,6 +28,8 @@ createRoot(root).render(
             <Route path="architecture" element={<ArchitectureView />} />
             <Route path="create" element={<CreateOrderView />} />
             <Route path="controls" element={<ControlsView />} />
+            <Route path="dead-letters" element={<DeadLettersView />} />
+            <Route path="dead-letters/:id" element={<DeadLetterDetailView />} />
             <Route path="orders/:id" element={<OrderDetailView />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>

@@ -66,6 +66,15 @@ const MESSAGES: Record<string, string> = {
   // Simulation dials (10.2).
   simulation_setting_out_of_range: "One of those values is outside what the factory will accept.",
 
+  // Chaos injection (12.1/12.2).
+  chaos_target_not_found: "That order no longer exists, so there's nothing to break.",
+  chaos_target_not_injectable: "This order's stage can't take that fault — it's already past where it would bite.",
+  chaos_rate_limited: "Easy — you're arming faults faster than the factory allows. Give it a few seconds.",
+
+  // Dead letters (8.3).
+  dead_letter_not_found: "That dead letter is gone — it may already have been swept.",
+  dead_letter_already_replayed: "This message has already been replayed. You can replay it again if you like.",
+
   validation_failed: "The request was missing something required.",
 };
 

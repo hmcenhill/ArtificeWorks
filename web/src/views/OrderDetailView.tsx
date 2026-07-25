@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 
 import { ApiError, fetchTimeline, fetchWorkOrder } from "../api/client";
 import type { TimelineEntry, TimelineKind, WorkOrder, WorkOrderTimeline } from "../api/types";
+import { ChaosPanel } from "../components/ChaosPanel";
 import { OrderActions } from "../components/OrderActions";
 import { useLiveData } from "../hooks/useLiveData";
 import { useReloadOnStream } from "../hooks/useReloadOnStream";
@@ -68,6 +69,7 @@ export function OrderDetailView() {
       ) : (
         <>
           {order && <OrderActions order={order} onActed={reloadBoth} />}
+          {order && <ChaosPanel order={order} />}
           <TimelineBody timeline={data!} />
         </>
       )}

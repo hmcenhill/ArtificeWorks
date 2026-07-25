@@ -1438,4 +1438,277 @@ button {
   .form-actions-split {
     gap: 0.7rem;
   }
+  /* Stack a chaos card and a dead-letter row so the danger button gets a full-width tap target. */
+  .chaos-card,
+  .dlq-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .chaos-button,
+  .dlq-row .replay-button {
+    width: 100%;
+  }
+}
+
+/* ---- Chaos panel (12.3): deliberate sabotage, styled apart from the ordinary decisions ---- */
+.chaos {
+  background: rgba(229, 83, 75, 0.05);
+  border: 1px solid rgba(229, 83, 75, 0.35);
+  border-radius: var(--radius);
+  padding: 1rem;
+  margin-bottom: 1.4rem;
+}
+
+.chaos-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.4rem;
+}
+
+.chaos-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--scrap);
+}
+
+.chaos-tag {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  color: var(--scrap);
+  border: 1px solid rgba(229, 83, 75, 0.4);
+  white-space: nowrap;
+}
+
+.chaos-intro {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  margin: 0 0 0.9rem;
+}
+
+.chaos-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.chaos-card {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.8rem;
+}
+
+.chaos-card-body {
+  flex: 1;
+}
+
+.chaos-card h3 {
+  margin: 0 0 0.2rem;
+  font-size: 0.92rem;
+}
+
+.chaos-blurb {
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  margin: 0;
+}
+
+.chaos-armed {
+  color: var(--pass);
+  font-size: 0.82rem;
+  margin: 0.5rem 0 0;
+}
+
+.chaos-button {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ---- Dead-letter inspector (12.3) ---- */
+.dlq {
+  max-width: 820px;
+}
+
+.dlq-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.dlq-scope {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid rgba(217, 138, 61, 0.4);
+  border-radius: 999px;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.76rem;
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+}
+
+.dlq-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.dlq-row {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--fault);
+  border-radius: var(--radius-sm);
+  padding: 0.8rem;
+}
+
+.dlq-row-replayed {
+  border-left-color: var(--pass);
+  opacity: 0.8;
+}
+
+.dlq-row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.dlq-row-top {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.dlq-attempts {
+  font-size: 0.74rem;
+  color: var(--text-dim);
+}
+
+.dlq-badge-replayed {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--pass);
+  border: 1px solid rgba(63, 185, 104, 0.4);
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+}
+
+.dlq-error {
+  margin: 0.4rem 0;
+  font-size: 0.85rem;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.dlq-row-sub {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  font-size: 0.76rem;
+}
+
+.dlq-order {
+  color: var(--text-dim);
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+}
+.dlq-order:hover {
+  color: var(--accent);
+}
+
+/* ---- Replay button + note ---- */
+.replay {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.replay-note {
+  font-size: 0.76rem;
+  color: var(--text-dim);
+  max-width: 220px;
+}
+
+.replay-error {
+  font-size: 0.76rem;
+}
+
+/* ---- Dead-letter detail ---- */
+.dlq-detail {
+  max-width: 760px;
+}
+
+.dlq-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.8rem;
+  margin: 1rem 0;
+}
+
+.dlq-facts dt {
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin-bottom: 0.2rem;
+}
+
+.dlq-facts dd {
+  margin: 0;
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+
+.dlq-block {
+  margin: 1.2rem 0;
+}
+
+.dlq-block h2 {
+  font-size: 0.95rem;
+  margin: 0 0 0.4rem;
+}
+
+.dlq-pre {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.8rem;
+  margin: 0;
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.dlq-pre-error {
+  color: var(--scrap);
+  background: rgba(229, 83, 75, 0.06);
+  border-color: rgba(229, 83, 75, 0.3);
+}
+
+.dlq-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+  margin-top: 1.4rem;
 }
