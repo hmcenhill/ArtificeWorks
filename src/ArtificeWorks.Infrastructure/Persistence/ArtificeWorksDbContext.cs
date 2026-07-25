@@ -39,6 +39,9 @@ public class ArtificeWorksDbContext : DbContext
     /// <summary>The factory's dials (10.2). Exactly one row, enforced by a check constraint.</summary>
     public DbSet<SimulationSettingsRow> SimulationSettings => Set<SimulationSettingsRow>();
 
+    /// <summary>The injected-fault registry (Epic 12): faults a visitor armed against one order, fired by the worker.</summary>
+    public DbSet<InjectedFaultRow> InjectedFaults => Set<InjectedFaultRow>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -563,6 +566,41 @@ public class ArtificeWorksDbContext : DbContext
             entity.Property(x => x.UpdatedBy)
                 .HasMaxLength(200)
                 .IsRequired();
+        });
+
+        modelBuilder.Entity<InjectedFaultRow>(entity =>
+        {
+            entity.ToTable("injected_faults");
+
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.Id)
+                .ValueGeneratedNever();
+
+            // Stored as its name, like every other enum here, so the column reads in psql.
+            entity.Property(x => x.Kind)
+                .HasConversion<string>()
+                .HasMaxLength(30)
+                .IsRequired();
+
+            entity.Property(x => x.ArmedUtc)
+                .IsRequired();
+
+            entity.Property(x => x.ArmedBy)
+                .HasMaxLength(200)
+                .IsRequired();
+
+            // The pipeline's hot read: "is THIS order armed?" — one lookup by target, per inspection.
+            entity.HasIndex(x => x.WorkOrderId);
+
+            // A real foreign key with a cascade, unlike dead_letters. A fault is always armed against
+            // a live order the service just loaded, so referential integrity is safe here — and the
+            // cascade means retiring an order (10.4) takes its fault history with it, so a fired
+            // fault ages out with its order rather than lingering forever.
+            entity.HasOne<WorkOrder>()
+                .WithMany()
+                .HasForeignKey(x => x.WorkOrderId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

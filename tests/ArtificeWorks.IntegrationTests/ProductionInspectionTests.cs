@@ -1,5 +1,6 @@
 using System.Diagnostics.Metrics;
 
+using ArtificeWorks.Application.Chaos;
 using ArtificeWorks.Application.Inspection;
 using ArtificeWorks.Application.Materials;
 using ArtificeWorks.Application.Messaging.Events;
@@ -324,6 +325,48 @@ public class ProductionInspectionTests : IClassFixture<ProductionFixture>
         Assert.Equal(VerdictOutcome.NotInInspection, result.Outcome);
         Assert.Equal(UnitStatus.Passed,
             (await Units(scenario.WorkOrderId)).Single(unit => unit.SerialNumber == serial).Status);
+    }
+
+    // ------------------------------------------------------ 12.1 injected inspection failure
+
+    /// <summary>
+    /// The story's headline against real Postgres: a visitor arms one order to fail its next
+    /// inspection, and it routes to rework — driven by the same verdict path a coin flip uses, with
+    /// the auto-inspector otherwise passing everything, so only the injected fault can be the cause.
+    /// The fault then fires exactly once: the rebuild's inspection is a fresh flip that passes.
+    /// </summary>
+    [Fact]
+    public async Task An_armed_order_fails_inspection_into_rework_and_the_fault_fires_only_once()
+    {
+        var scenario = await Seed("CHAOS", orderQty: 1);
+        await Produce(scenario.WorkOrderId, attempt: 1);
+
+        await Arm(scenario.WorkOrderId, InjectedFaultKind.FailInspection);
+
+        var first = await Inspect(scenario.WorkOrderId, attempt: 1);
+
+        // Routed to rework, not Delivery — and the scrap reason names the injected fault, so the
+        // timeline reads truthfully rather than blaming a phantom coin flip.
+        Assert.Equal(InspectionOutcome.ReworkRequired, first.Outcome);
+        Assert.Equal(WorkOrderStatus.InProcess, await Status(scenario.WorkOrderId));
+
+        var scrapped = Assert.Single(await Units(scenario.WorkOrderId), unit => unit.Status == UnitStatus.Scrapped);
+        Assert.Equal(InspectionService.InjectedFailureReason, scrapped.ScrapReason);
+
+        // Fires once: the rebuild's inspection finds the fault disarmed and passes to Delivery.
+        await Produce(scenario.WorkOrderId, attempt: 2);
+        var second = await Inspect(scenario.WorkOrderId, attempt: 2);
+
+        Assert.Equal(InspectionOutcome.Passed, second.Outcome);
+        Assert.Equal(WorkOrderStatus.Delivery, await Status(scenario.WorkOrderId));
+    }
+
+    private async Task Arm(Guid workOrderId, InjectedFaultKind kind)
+    {
+        await using var scope = _fixture.Services.CreateAsyncScope();
+        var result = await scope.ServiceProvider.GetRequiredService<ChaosService>()
+            .Arm(workOrderId, kind, "test");
+        Assert.Equal(ChaosArmOutcome.Armed, result.Outcome);
     }
 
     // ------------------------------------------------------------------ 9.2 the instruments

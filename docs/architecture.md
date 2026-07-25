@@ -109,6 +109,21 @@ Scheduled ──► [pick materials] ──► MaterialsReserved
   dimension.** Without it every panel reports robot traffic as demand. The generator creates orders
   **over HTTP** (`POST /work-orders` with an `Idempotency-Key`), never by a direct write — a direct
   write would skip the idempotency filter, DTO validation and the outbox row.
+- **Failure injection is a per-order registry the pipeline consults, not a back door that bypasses it
+  (Epic 12).** An `injected_faults` row is armed against one `WorkOrderId` by `POST /system/chaos`
+  (the API arms; the worker, a different process, fires — so the state must be durable and shared,
+  like the settings row). This is the **opposite blast radius from the dials**: they retune the whole
+  factory, a fault touches exactly one order, refused at the door for a terminal/faulted target. The
+  pipeline reads an armed fault the way the inspector reads the failure rate — one more input to the
+  existing verdict, never a "chaos mode" branch — so recovery runs entirely on the machinery that was
+  already there (12.1: `FailInspection` → Epic 6's rework/Fault loop). **A fault fires exactly once,
+  and its consume commits outside any stage transaction** (`TryConsume` is a single conditional
+  `UPDATE`), so a redelivered/rolled-back stage cannot re-fire it — the property 12.2's
+  transient-then-recover fault will turn on. The world-reset sweep disarms armed-but-unfired faults;
+  a fired one is left as provenance and ages out with its order's retirement cascade. The endpoint is
+  **rate-limited** (the project's first limiter, keyed by caller IP) — with the one-order radius and
+  the sweep, that is "can't grief each other" and "can't corrupt the shared world" without the auth
+  gate that still doesn't exist.
 
 ### Observability
 
@@ -143,5 +158,6 @@ Scheduled ──► [pick materials] ──► MaterialsReserved
   simulation never releases a hold, so refusal stays uncapped and the world sweep retires whatever
   nobody rescues. Re-open only if a future epic adds an automatic recovery action.
 - **`SetStatus` (superuser override) has no endpoint**, and `/system/*` (dead letters, stats,
-  simulation) is unauthenticated — both wait behind the admin auth gate, which is why `/system` is a
-  single path prefix rather than a scatter of endpoints.
+  simulation, chaos) is unauthenticated — both wait behind the admin auth gate, which is why
+  `/system` is a single path prefix rather than a scatter of endpoints. `/system/chaos` leans on a
+  rate limiter as an interim guardrail until that gate lands.

@@ -68,6 +68,24 @@ public static class ProblemCodes
     /// </summary>
     public const string SimulationSettingOutOfRange = "simulation_setting_out_of_range";
 
+    // Failure injection (12.1).
+
+    /// <summary>No order exists to arm a fault against — a 404.</summary>
+    public const string ChaosTargetNotFound = "chaos_target_not_found";
+
+    /// <summary>
+    /// The order exists but cannot be broken (409): it is terminal, already faulted, or in a state
+    /// the requested fault cannot touch. The bounded blast radius, refused at the door.
+    /// </summary>
+    public const string ChaosTargetNotInjectable = "chaos_target_not_injectable";
+
+    /// <summary>
+    /// The chaos endpoint's rate limiter turned a burst away (429). Paired with the one-order blast
+    /// radius, this is the "visitors can't grief each other" guarantee standing in for the auth gate
+    /// that still doesn't exist.
+    /// </summary>
+    public const string ChaosRateLimited = "chaos_rate_limited";
+
     /// <summary>Maps a domain transition-rejection code onto its wire reason code.</summary>
     public static string ForTransition(TransitionErrorCode code) => code switch
     {

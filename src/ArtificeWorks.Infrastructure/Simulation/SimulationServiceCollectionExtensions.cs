@@ -9,6 +9,7 @@ using ArtificeWorks.Infrastructure.Scheduling;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace ArtificeWorks.Infrastructure.Simulation;
 
@@ -107,6 +108,12 @@ public static class SimulationServiceCollectionExtensions
     public static IServiceCollection AddWorldReset(this IServiceCollection services)
     {
         services.AddScoped<IWorldRepository, WorldRepository>();
+
+        // The sweep also disarms leftover injected faults (Epic 12), so it needs the registry. TryAdd
+        // so a host that already called AddChaos (the API) does not register it twice, and one that
+        // did not (the simulation host) still gets it.
+        services.TryAddScoped<IInjectedFaultRepository, InjectedFaultRepository>();
+
         services.AddScoped<WorldResetService>();
         return services;
     }

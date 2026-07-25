@@ -1,3 +1,4 @@
+using ArtificeWorks.Application.Chaos;
 using ArtificeWorks.Application.Inspection;
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Messaging;
@@ -281,6 +282,50 @@ public class InspectionTests
         Assert.Equal(VerdictOutcome.ReasonRequired, noReason.Outcome);
     }
 
+    // ------------------------------------------------------------------ 12.1 injected faults
+
+    /// <summary>
+    /// An armed FailInspection fault fails the order's units even though the verdict source would
+    /// pass them all — proving the fault is one more input to the ordinary verdict, routing the
+    /// order onto the same rework path a coin-flip failure does rather than a parallel branch.
+    /// </summary>
+    [Fact]
+    public async Task An_armed_fail_inspection_fault_routes_the_order_to_rework_not_delivery()
+    {
+        var harness = new Harness(qty: 1, failEverything: false, faults: new FakeInjectedFaultRepository());
+        await harness.Produce(1);
+        await harness.Arm(InjectedFaultKind.FailInspection);
+
+        var result = await harness.Inspect(1);
+
+        // Verdicts pass everything, so only the fault can have failed the unit.
+        Assert.Equal(InspectionOutcome.ReworkRequired, result.Outcome);
+        Assert.Equal(WorkOrderStatus.InProcess, harness.WorkOrder.CurrentStatus);
+
+        var scrapped = Assert.Single(harness.WorkOrder.AssignedStock, unit => unit.Status == UnitStatus.Scrapped);
+        Assert.Equal(InspectionService.InjectedFailureReason, scrapped.ScrapReason);
+    }
+
+    /// <summary>
+    /// The fault fires exactly once: the forced fail routes to rework, and the rebuild's inspection
+    /// is a fresh coin flip that passes to Delivery rather than a second forced fail.
+    /// </summary>
+    [Fact]
+    public async Task An_injected_inspection_failure_fires_once_then_the_rerun_is_a_fresh_coin_flip()
+    {
+        var harness = new Harness(qty: 1, failEverything: false, faults: new FakeInjectedFaultRepository());
+        await harness.Produce(1);
+        await harness.Arm(InjectedFaultKind.FailInspection);
+
+        Assert.Equal(InspectionOutcome.ReworkRequired, (await harness.Inspect(1)).Outcome);
+
+        await harness.Produce(2);
+        var rerun = await harness.Inspect(2);
+
+        Assert.Equal(InspectionOutcome.Passed, rerun.Outcome);
+        Assert.Equal(WorkOrderStatus.Delivery, harness.WorkOrder.CurrentStatus);
+    }
+
     // ------------------------------------------------------------------------------ harness
 
     /// <summary>
@@ -297,13 +342,18 @@ public class InspectionTests
         private readonly InspectionService _inspection;
         private readonly ScriptedVerdictSource _verdicts;
 
-        public Harness(uint qty, bool failEverything, int maxRebuildAttempts = 3, bool autoInspect = true)
+        private readonly FakeInjectedFaultRepository? _faults;
+
+        public Harness(
+            uint qty, bool failEverything, int maxRebuildAttempts = 3, bool autoInspect = true,
+            FakeInjectedFaultRepository? faults = null)
         {
             WorkOrder = new WorkOrder(Author, TestData.DefaultProduct(), qty);
             WorkOrder.AdvanceToNextStep(Author); // Intake -> Scheduled
 
             var orders = new SingleWorkOrderRepository(WorkOrder);
             _verdicts = new ScriptedVerdictSource(failEverything);
+            _faults = faults;
 
             var metrics = TestData.Metrics();
 
@@ -316,12 +366,16 @@ public class InspectionTests
                 new InspectionConfiguration { AutoInspect = autoInspect },
                 new ProductionConfiguration { MaxRebuildAttempts = maxRebuildAttempts },
                 metrics,
-                NullLogger<InspectionService>.Instance);
+                NullLogger<InspectionService>.Instance,
+                injectedFaults: faults);
         }
 
         public Task<ProductionResult> Produce(int attempt) => _production.Produce(WorkOrder.Id, attempt);
 
         public Task<InspectionResult> Inspect(int attempt) => _inspection.InspectAttempt(WorkOrder.Id, attempt);
+
+        /// <summary>Arms an injected fault against this harness's order (12.1).</summary>
+        public Task Arm(InjectedFaultKind kind) => _faults!.Arm(WorkOrder.Id, kind, "x-unit");
 
         public Task<VerdictResult> Verdict(Guid serialNumber, bool passed, string? reason = null) =>
             _inspection.RecordVerdict(WorkOrder.Id, serialNumber, passed, reason, "visitor");

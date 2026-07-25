@@ -5,6 +5,7 @@ using ArtificeWorks.Application.Messaging;
 using ArtificeWorks.Application.Observability;
 using ArtificeWorks.Application.Production;
 using ArtificeWorks.Domain.Models.Materials;
+using ArtificeWorks.Infrastructure.Chaos;
 using ArtificeWorks.Infrastructure.Data;
 using ArtificeWorks.Infrastructure.Persistence;
 
@@ -59,6 +60,11 @@ public class ProductionFixture : IAsyncLifetime
         services.AddScoped<ProductionService>();
         services.AddScoped<InspectionService>();
         services.AddSingleton<IEventPublisher>(Published);
+
+        // The injected-fault registry (Epic 12), so the inspection service resolves it and a test
+        // can arm a FailInspection fault against a real order — the "fires once, routes to rework"
+        // check the story wants against real Postgres.
+        services.AddChaos();
 
         // The real RandomVerdictSource is a coin flip; these tests need to decide outcomes, so
         // they swap in a scripted one at exactly the seam Epic 10 and Epic 12 will use.

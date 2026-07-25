@@ -8,9 +8,11 @@ using Microsoft.Extensions.Logging;
 namespace ArtificeWorks.Application.Simulation;
 
 /// <param name="RetiredBeforeUtc">The cutoff actually used, so the caller can see what "old" meant.</param>
+/// <param name="FaultsDisarmed">Armed-but-unfired injected faults cleared (Epic 12), so a leftover fault never outlives a reset.</param>
 public sealed record WorldResetResult(
     int ComponentsRestocked,
     int OrdersRetired,
+    int FaultsDisarmed,
     DateTime RetiredBeforeUtc,
     string Summary);
 
@@ -38,17 +40,20 @@ public sealed record WorldResetResult(
 public sealed class WorldResetService
 {
     private readonly IWorldRepository _world;
+    private readonly IInjectedFaultRepository _injectedFaults;
     private readonly SimulationSettingsCache _settings;
     private readonly ArtificeWorksMetrics _metrics;
     private readonly ILogger<WorldResetService> _logger;
 
     public WorldResetService(
         IWorldRepository world,
+        IInjectedFaultRepository injectedFaults,
         SimulationSettingsCache settings,
         ArtificeWorksMetrics metrics,
         ILogger<WorldResetService> logger)
     {
         _world = world;
+        _injectedFaults = injectedFaults;
         _settings = settings;
         _metrics = metrics;
         _logger = logger;
@@ -67,24 +72,33 @@ public sealed class WorldResetService
 
         var counts = await _world.Sweep(cutoff, cancellationToken);
 
+        // Injected faults are the same class of housekeeping as retired orders (Epic 12): an
+        // armed-but-unfired fault must not outlive a reset. A fired fault is left alone — it is
+        // provenance, and it ages out with its order's retirement cascade above. Kept as its own
+        // operation, outside the world sweep's carefully deadlock-ordered transaction, because it
+        // touches an unrelated table and has no ordering to agree with.
+        var faultsDisarmed = await _injectedFaults.DisarmUnfired(cancellationToken);
+
         // Counted after the commit, 9.2's rule: a sweep that rolled back must move no counter.
         _metrics.WorldSwept(counts.OrdersRetired, counts.ComponentsRestocked);
 
         activity?.SetTag("artificeworks.orders_retired", counts.OrdersRetired);
         activity?.SetTag("artificeworks.components_restocked", counts.ComponentsRestocked);
+        activity?.SetTag("artificeworks.faults_disarmed", faultsDisarmed);
 
         var summary =
-            $"Restocked {counts.ComponentsRestocked} component(s) and retired {counts.OrdersRetired} order(s) "
-            + $"last touched before {cutoff:u}.";
+            $"Restocked {counts.ComponentsRestocked} component(s), retired {counts.OrdersRetired} order(s) "
+            + $"and disarmed {faultsDisarmed} injected fault(s), last touched before {cutoff:u}.";
 
         // Information with its counts, always — even a no-op sweep. It is infrequent, it is
         // destructive, and it is the first thing to suspect when an order someone was watching is
         // gone; "the sweep ran and removed nothing" is exactly as useful an answer as the other one.
         _logger.LogInformation(
-            "World reset ({TriggeredBy}): restocked {ComponentsRestocked} component(s), retired {OrdersRetired} order(s) "
-            + "last touched before {Cutoff:u}.",
-            triggeredBy, counts.ComponentsRestocked, counts.OrdersRetired, cutoff);
+            "World reset ({TriggeredBy}): restocked {ComponentsRestocked} component(s), retired {OrdersRetired} order(s), "
+            + "disarmed {FaultsDisarmed} injected fault(s), last touched before {Cutoff:u}.",
+            triggeredBy, counts.ComponentsRestocked, counts.OrdersRetired, faultsDisarmed, cutoff);
 
-        return new WorldResetResult(counts.ComponentsRestocked, counts.OrdersRetired, cutoff, summary);
+        return new WorldResetResult(
+            counts.ComponentsRestocked, counts.OrdersRetired, faultsDisarmed, cutoff, summary);
     }
 }

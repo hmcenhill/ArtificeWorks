@@ -2,6 +2,7 @@ using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Materials;
 using ArtificeWorks.Application.Messaging.Events;
 using ArtificeWorks.Application.Observability;
+using ArtificeWorks.Infrastructure.Chaos;
 using ArtificeWorks.Infrastructure.Data;
 using ArtificeWorks.Infrastructure.Messaging;
 using ArtificeWorks.Infrastructure.Observability;
@@ -40,6 +41,11 @@ builder.Services.AddScoped<MaterialPickingService>();
 // worker is where inspections actually fail. It also brings 10.1's pace policy, which the
 // worker's own outbox dispatcher consults.
 builder.Services.AddSimulationSettings(builder.Configuration);
+
+// Failure injection registry (Epic 12). The worker is where faults FIRE: its inspection service
+// consults an armed FailInspection fault and routes the order to rework/Fault. Registered before the
+// workflow below so the inspection service resolves the registry.
+builder.Services.AddChaos();
 
 // Production + inspection (Epic 6): the middle of the pipeline, including the rework cycle.
 builder.Services.AddProductionAndInspection(builder.Configuration);

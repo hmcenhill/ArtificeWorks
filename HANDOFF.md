@@ -7,7 +7,7 @@
 > permanent, move it to [docs/architecture.md](docs/architecture.md) (the settled invariants) or the
 > relevant epic file, and drop it from here. Commit this file with the work it describes.
 
-**Last updated:** 2026-07-24 (**Epic 12 groomed** into 12.1–12.3 — the failure-injection story files are written; implementation not started. Epic 11 complete; M5 wrapped, M6 begins here)
+**Last updated:** 2026-07-24 (**Epic 12.1 done** — the injection registry, `POST /system/chaos`, the fail-an-inspection lever, and the world-reset disarm sweep. 12.2/12.3 next. Integration tests written but **not run here — Docker was unavailable**; 159 unit tests green.)
 
 ## Current state
 
@@ -40,21 +40,25 @@ Finished epics (detail in each epic file, git history, and architecture.md):
    also open `/architecture`** and watch the diagram pulse off the same stream — a paced order should
    visibly dwell in the broker; raise the failure rate and the workers→broker edge should flash red.
    This is the one part of 11.4 not yet seen against a live stack (build + type-check are green).
-2. **Epic 12 — failure injection** (M6, next; **now groomed** into 12.1–12.3): the diagram already
-   *shows* a fault and a parked message, so 12 is mostly giving the visitor the lever and letting the
-   picture do the rest. **12.1** builds the backbone — an `injected_faults` DB registry, a guarded +
-   rate-limited `POST /system/chaos` (targets one order, opposite blast radius to 10.2's global
-   dials), a world-reset sweep — and proves it on the gentlest fault (fail an inspection → existing
-   rework loop). **12.2** lights up the two broker faults on that registry: a one-shot transient
-   throw that rides 8.2's retry ladder and *recovers on redelivery* ("kill a worker mid-task"), and a
-   `PoisonMessageException` throw that parks straight into `dead_letters`. Its one hard point: the
-   disarm must commit *outside* the rolled-back stage transaction, or the transient re-fires and
-   parks instead of recovering. **12.3** is the frontend money shot — contextual chaos buttons on the
-   order detail + the first browser view of `dead_letters` (list → read → replay). **Batching:** 12.1
-   solo first (it fixes the registry shape the others build on), then 12.2, then 12.3; 12.1+12.2 can
-   combine into one backend run if momentum is wanted. Subagent: an `Explore` for 12.2 to map each
-   stage's service-method choke point + the Testcontainers worker rig.
-3. **Verify the telemetry against a live stack.** Everything is asserted at the *shape* level, but the
+2. **Run the 12.1 integration tests against Docker.** They were written but not executed here
+   (Docker was down). Bring the stack up and `dotnet test tests/ArtificeWorks.IntegrationTests`.
+   New/changed: `ChaosApiTests` (arm→200, missing→404, terminal→409) and `ChaosRateLimitTests`
+   (burst→429, its own fresh fixture so the fixed window starts empty); `ProductionInspectionTests`
+   gained the routing check (armed order → rework, scrap reason "Failed by injected fault.", fires
+   once); `WorldResetTests` gained the disarm-unfired sweep check. **`WorldResetResult` now has a
+   `FaultsDisarmed` field** and the migration `20260725000921_InjectedFaults` must be applied
+   (`dotnet ef database update …`) before these run.
+3. **Epic 12.2 — the two broker faults** (next backend story): light up `TransientOnce` and `Poison`
+   on the 12.1 registry. A one-shot transient throw in a worker handler that rides 8.2's retry ladder
+   and *recovers on redelivery* ("kill a worker mid-task"), and a `PoisonMessageException` throw that
+   parks straight into `dead_letters`. **The registry already commits the consume outside the stage
+   transaction** (`InjectedFaultRepository.TryConsume` is a standalone conditional `UPDATE` with
+   `FOR UPDATE SKIP LOCKED`), which is the disarm-vs-rollback property 12.2 turns on — reuse it, don't
+   re-solve it. The enum values `TransientOnce`/`Poison` exist and validate through `ChaosService`
+   already; nothing consumes them yet. Subagent: an `Explore` to map each worker handler's
+   service-method choke point + the Testcontainers worker rig (`WorkerConsumerTests`). **12.3** is
+   then the frontend — contextual chaos buttons + the first browser view of `dead_letters`.
+4. **Verify the telemetry against a live stack.** Everything is asserted at the *shape* level, but the
    LogQL/PromQL in the runbook has not been run against real Loki/Prometheus — field naming after OTLP
    ingest is where reality likely differs. ~30 min with the stack up confirms it.
 
@@ -63,8 +67,9 @@ Finished epics (detail in each epic file, git history, and architecture.md):
 Settled invariants and their rationale moved to [docs/architecture.md](docs/architecture.md) — nothing
 is currently blocked on an undecided question. The few deliberate deferrals still worth remembering:
 
-- **Admin auth gate** — `SetStatus` has no endpoint; `/system/*` (dead letters, stats, simulation) is
-  unauthenticated behind that one path prefix until the gate exists.
+- **Admin auth gate** — `SetStatus` has no endpoint; `/system/*` (dead letters, stats, simulation,
+  chaos) is unauthenticated behind that one path prefix until the gate exists. `/system/chaos` has a
+  rate limiter (fixed window, 5 per 10s, keyed by caller IP) as an interim guardrail.
 - **`work-order.faulted` / `work-order.completed`** now have exactly one subscriber, the 11.2
   dashboard relay (no *pipeline* consumer, still by design).
 - **Dashboard relay is single-instance** — one fixed-name `artifice.dashboard` queue. A scaled API
@@ -82,6 +87,7 @@ is currently blocked on an undecided question. The few deliberate deferrals stil
 
 One line per entry; full detail is in each epic file and the git commit.
 
+- **2026-07-24** — Epic 12.1 done: the injection backbone + first lever. New `injected_faults` table + `InjectedFaultRow`/`IInjectedFaultRepository`/`InjectedFaultRepository` (Arm idempotent by (order,kind); `TryConsume` a standalone conditional `UPDATE … FOR UPDATE SKIP LOCKED` that fires once and commits outside any stage transaction; `DisarmUnfired`). `ChaosService` (Application) validates the target at the door (terminal/faulted refused, `FailInspection` refused past Delivery) and arms; `POST /system/chaos` (`ChaosController`, per-order, rate-limited — the project's first ASP.NET limiter, fixed window 5/10s by IP; problem codes `chaos_target_not_found`/`_not_injectable`/`_rate_limited`). Consult point: `InspectionService.InspectAttempt` reads an armed `FailInspection` fault as one more verdict input (reason "Failed by injected fault."), routing through Epic 6's rework/Fault loop — no parallel path. `WorldResetService.Sweep` now disarms unfired faults (`WorldResetResult.FaultsDisarmed` added). `AddChaos` DI wired into API + worker; registry TryAdded in `AddWorldReset` for the sim host. Migration `20260725000921_InjectedFaults` (FK→work_orders cascade, target index, `Kind` varchar(30)). 159 unit tests green (8 new: `ChaosTests` + inspection force-fail/fires-once). Integration tests written (`ChaosApiTests`, `ChaosRateLimitTests`, routing in `ProductionInspectionTests`, sweep in `WorldResetTests`) but **not run — Docker unavailable**. `TransientOnce`/`Poison` enum values reserved, unconsumed (12.2).
 - **2026-07-24** — Epic 12 groomed into 12.1–12.3 (registry + fail-inspection → the two broker faults → dashboard chaos + DLQ inspector). Key findings from reading the code: the epic is genuinely "wiring existing reliability into the demo" — the recovery paths (retry ladder, parked queue, `dead_letters`, rework loop) all exist; the only new state is an `injected_faults` DB registry (cross-process: API arms, worker fires). Central decisions recorded: `/system/chaos` per-order (opposite blast radius to the global dials, same admin prefix); a fault fires once with the disarm committed *outside* the rolled-back stage transaction (12.2's one subtle correctness point); "kill a worker" is an honestly-labelled simulated death (throw-before-ack), not a real SIGKILL; rate limiter is the project's first. `web` has no DLQ view yet — 12.3 adds it. No code changed; README status advanced (11 → Done, 12 → next up).
 - **2026-07-23** — Epic 11.4 done → **Epic 11 complete**: the animated architecture diagram, the showpiece. Pure frontend, no backend added. Inline SVG topology (API·broker·Workers·Postgres) at `/architecture`; pulses driven entirely by 11.2's SignalR stream (every pulse a real event), event→hop table the only domain knowledge (`web/src/domain/hops.ts`); node strain from a ~5s `/system/stats` poll (`useSystemStats`/`healthFrom`) — outbox backlog, parked-message badge, low stock. One imperative `requestAnimationFrame` loop (no per-frame React), pooled dots, pulse cap, idle-park, clean unmount; reduced-motion + phone handled. `web` type-checks + builds; no backend/tests changed.
 - **2026-07-23** — Epic 11.3 done: the dashboard is interactive. Create-order form (`GET /products` + `POST /work-orders` with `Idempotency-Key`, routes to live timeline); decision moments on the detail view (advance/hold/release/book-carrier/verdict/cancel, state-legal, driving the ordinary endpoints, API-authoritative); factory dials panel (round-trips `GET/PUT /system/simulation`, shows source + resolved rung + takes-effect, flagged global). Shared ProblemDetails→sentence mapper. **One backend addition** (the finding the story predicted): `GET /products` list. Two by-hand mirrors: numeric-enum `WorkOrderDto` decoded in a `client.ts` adapter (name converter stays list-DTO-only); carriers in `web/src/domain/carriers.ts`. 151 unit + 5 `ProductApiTests` (incl. new list test) green; web type-checks + builds.

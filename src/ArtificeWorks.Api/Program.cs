@@ -3,13 +3,17 @@ using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
+using System.Threading.RateLimiting;
+
 using ArtificeWorks.Api.Configuration;
+using ArtificeWorks.Api.Controllers;
 using ArtificeWorks.Api.Errors;
 using ArtificeWorks.Api.Middleware;
 using ArtificeWorks.Api.Realtime;
 using ArtificeWorks.Application.Handlers;
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Observability;
+using ArtificeWorks.Infrastructure.Chaos;
 using ArtificeWorks.Infrastructure.Data;
 using ArtificeWorks.Infrastructure.Messaging;
 using ArtificeWorks.Infrastructure.Observability;
@@ -18,6 +22,7 @@ using ArtificeWorks.Infrastructure.Simulation;
 using ArtificeWorks.Infrastructure.Workflow;
 
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 using OpenTelemetry.Trace;
@@ -127,6 +132,49 @@ builder.Services.AddSimulationSettings(builder.Configuration);
 // on a schedule — one code path, so the button and the schedule cannot drift apart.
 builder.Services.AddWorldReset();
 
+// Failure injection (Epic 12): the fault registry and the service that arms it for POST
+// /system/chaos. The worker registers the same registry to fire faults; the API is where they are
+// armed.
+builder.Services.AddChaos();
+
+// The chaos endpoint's rate limiter — the project's first (12.1). A modest fixed window, keyed by
+// caller IP so one griefing script cannot lock everyone else out, standing in for the admin gate
+// that still does not exist. Paired with the one-order blast radius it is the "can't grief each
+// other" acceptance criterion.
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddPolicy(ChaosController.RateLimitPolicy, httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                // Enough for a human demo (arm a fault, watch it recover, arm another), far below
+                // what a script would need to grief the shared world.
+                PermitLimit = 5,
+                Window = TimeSpan.FromSeconds(10),
+                QueueLimit = 0,
+            }));
+
+    // A turned-away burst still speaks the house error language: problem+json with a stable code,
+    // not an empty 429, so the dashboard can tell "slow down" apart from a real failure.
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        var response = context.HttpContext.Response;
+        response.StatusCode = StatusCodes.Status429TooManyRequests;
+        response.ContentType = "application/problem+json";
+
+        var problem = new ProblemDetails
+        {
+            Status = StatusCodes.Status429TooManyRequests,
+            Title = "Too many chaos requests.",
+            Detail = "Failure injection is rate-limited so visitors can't grief each other. Wait a moment and try again.",
+        };
+        problem.Extensions["code"] = ProblemCodes.ChaosRateLimited;
+
+        await response.WriteAsJsonAsync(problem, cancellationToken);
+    };
+});
+
 builder.Services.AddScoped<ProductHandler>();
 builder.Services.AddScoped<WorkOrderHandler>();
 
@@ -172,6 +220,10 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+// The chaos endpoint's rate limiter (12.1). Nothing else opts in — only [EnableRateLimiting("chaos")]
+// on ChaosController is affected — so the rest of the API is untouched.
+app.UseRateLimiter();
 
 app.MapControllers();
 

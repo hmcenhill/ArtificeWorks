@@ -1,3 +1,4 @@
+using ArtificeWorks.Application.Chaos;
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Messaging;
 using System.Diagnostics;
@@ -35,6 +36,9 @@ public sealed class InspectionService
     /// <summary>Author recorded against state-history entries the automatic path writes.</summary>
     public const string Author = "inspection-worker";
 
+    /// <summary>The verdict reason recorded when a unit fails because a visitor armed the order (12.1).</summary>
+    public const string InjectedFailureReason = "Failed by injected fault.";
+
     private readonly IWorkOrderRepository _workOrderRepository;
     private readonly IInspectionRunRepository _runRepository;
     private readonly IVerdictSource _verdicts;
@@ -42,6 +46,7 @@ public sealed class InspectionService
     private readonly InspectionConfiguration _inspectionConfig;
     private readonly ProductionConfiguration _productionConfig;
     private readonly SimulationSettingsCache? _settings;
+    private readonly IInjectedFaultRepository? _injectedFaults;
     private readonly ArtificeWorksMetrics _metrics;
     private readonly ILogger<InspectionService> _logger;
 
@@ -49,6 +54,11 @@ public sealed class InspectionService
     /// 10.2's live dials, supplying <c>AutoInspect</c> and the rebuild cap so both can be changed
     /// on a running factory. Null (a unit test) falls back to the startup configuration, which is
     /// also what the cache holds before its first refresh.
+    /// </param>
+    /// <param name="injectedFaults">
+    /// Epic 12's fault registry. The inspector reads an armed <c>FailInspection</c> fault the way it
+    /// reads the failure rate — one more input to the verdict, not a parallel path. Null (a unit
+    /// test, or any host without chaos wired) means no order is ever force-failed.
     /// </param>
     public InspectionService(
         IWorkOrderRepository workOrderRepository,
@@ -59,7 +69,8 @@ public sealed class InspectionService
         ProductionConfiguration productionConfig,
         ArtificeWorksMetrics metrics,
         ILogger<InspectionService> logger,
-        SimulationSettingsCache? settings = null)
+        SimulationSettingsCache? settings = null,
+        IInjectedFaultRepository? injectedFaults = null)
     {
         _metrics = metrics;
         _workOrderRepository = workOrderRepository;
@@ -69,6 +80,7 @@ public sealed class InspectionService
         _inspectionConfig = inspectionConfig;
         _productionConfig = productionConfig;
         _settings = settings;
+        _injectedFaults = injectedFaults;
         _logger = logger;
     }
 
@@ -131,9 +143,27 @@ public sealed class InspectionService
 
         if (AutoInspect)
         {
+            // 12.1: a visitor may have armed this order to fail its next inspection. The fault is one
+            // more input to the verdict — read once here, applied to every unit this attempt built —
+            // and it then routes through the same Scrap → rework/Fault path a coin-flip failure does.
+            // TryConsume commits on its own and only an unfired fault fires, so it bites exactly once:
+            // a rebuild's inspection is a fresh coin flip, not a second forced fail.
+            var forceFail = _injectedFaults is not null
+                && await _injectedFaults.TryConsume(
+                    workOrderId, InjectedFaultKind.FailInspection, cancellationToken);
+
+            if (forceFail)
+            {
+                _logger.LogWarning(
+                    "Work order {WorkOrderId} attempt {Attempt} is failing inspection by injected fault.",
+                    workOrderId, attemptNumber);
+            }
+
             foreach (var unit in workOrder.UnitsAwaitingInspection(attemptNumber))
             {
-                var verdict = _verdicts.Verdict(unit);
+                var verdict = forceFail
+                    ? new UnitVerdict(Passed: false, Reason: InjectedFailureReason)
+                    : _verdicts.Verdict(unit);
                 var applied = verdict.Passed
                     ? unit.Pass()
                     : unit.Scrap(verdict.Reason ?? _inspectionConfig.AutoFailureReason);

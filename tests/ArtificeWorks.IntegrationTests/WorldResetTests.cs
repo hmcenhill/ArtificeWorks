@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 
+using ArtificeWorks.Application.Chaos;
 using ArtificeWorks.Application.Commands;
 using ArtificeWorks.Application.Data;
 using ArtificeWorks.Application.Simulation;
@@ -158,7 +159,63 @@ public class WorldResetTests : IClassFixture<ApiFixture>
         Assert.Contains("Restocked", result.Summary);
     }
 
+    /// <summary>
+    /// The sweep's Epic 12 duty: an armed-but-unfired fault is disarmed, while the live order it was
+    /// aimed at is left alone. An injected fault must not outlive a reset — the same housekeeping
+    /// class as a retired order, but its target keeps running.
+    /// </summary>
+    [Fact]
+    public async Task A_sweep_disarms_an_armed_but_unfired_fault_and_leaves_its_live_order_alone()
+    {
+        var order = await LiveOrder();
+
+        await using (var scope = _fixture.Services.CreateAsyncScope())
+        {
+            var chaos = scope.ServiceProvider.GetRequiredService<ChaosService>();
+            var armed = await chaos.Arm(order, InjectedFaultKind.FailInspection, "fault-sweep");
+            Assert.Equal(ChaosArmOutcome.Armed, armed.Outcome);
+        }
+
+        Assert.True(await ArmedFaultCount(order) >= 1);
+
+        var result = await Sweep();
+        Assert.True(result.FaultsDisarmed >= 1);
+
+        // The fault is gone; the order it targeted is untouched — still mid-pipeline, never retired.
+        Assert.Equal(0, await ArmedFaultCount(order));
+        Assert.True(await Exists(order));
+    }
+
     // -------------------------------------------------------------------------- helpers
+
+    /// <summary>A fresh, in-flight order created through the API — a legitimate injection target.</summary>
+    private async Task<Guid> LiveOrder()
+    {
+        await _fixture.Client.PostAsJsonAsync("/products", new CreateProductRequest
+        {
+            Requestor = "fault-sweep",
+            ProductId = "FAULT-SWEEP-001",
+            ProductName = "Fault Sweep Automaton",
+        });
+
+        var response = await _fixture.Client.PostAsJsonAsync("/work-orders", new CreateWorkOrderRequest
+        {
+            Requestor = "fault-sweep",
+            ItemId = "FAULT-SWEEP-001",
+            Qty = 1,
+        });
+        response.EnsureSuccessStatusCode();
+
+        return (await response.Content.ReadFromJsonAsync<WorkOrderDto>())!.Id;
+    }
+
+    private async Task<int> ArmedFaultCount(Guid workOrderId)
+    {
+        await using var scope = _fixture.Services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<ArtificeWorksDbContext>();
+        return await context.InjectedFaults
+            .CountAsync(fault => fault.WorkOrderId == workOrderId && fault.FiredUtc == null);
+    }
 
     private async Task<WorldResetResult> Sweep()
     {
