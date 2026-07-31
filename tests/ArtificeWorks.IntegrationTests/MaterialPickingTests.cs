@@ -260,9 +260,19 @@ public class MaterialPickingTests : IClassFixture<MaterialPickingFixture>
         Assert.Equal(1, await context.MaterialReservations
             .CountAsync(r => r.WorkOrderId == scenario.WorkOrderId && r.AttemptNumber == 2));
 
-        // One announcement per attempt, so production is asked to build attempt 2 once.
-        Assert.Single(_fixture.Published.OfType<MaterialsReserved>()
-            .Where(e => e.WorkOrderId == scenario.WorkOrderId && e.AttemptNumber == 2));
+        // One *staged* announcement for attempt 2, asserted through the state-history note rather
+        // than through Published. Both are staged by the same call inside the reservation
+        // transaction, but only the note is written by the transaction: `RecordingEventPublisher`
+        // is an in-memory queue that knows nothing about rollback, so the loser's announcement
+        // stays in it while the loser's note — like its decrements and its reservation row — is
+        // discarded. The note is therefore the channel that actually tells the truth here, and it
+        // proves the same property: exactly one delivery got as far as describing the rebuild.
+        //
+        // (5.4's equivalent race test asserts DB state only, for this reason. The claim that the
+        // *event* survives or rolls back with the pick is an outbox property and is proved where
+        // the outbox is real, in OutboxTests.)
+        Assert.Single(await History(scenario.WorkOrderId),
+            h => (h.Notes ?? "").Contains("rebuild attempt 2"));
     }
 
     /// <summary>

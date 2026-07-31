@@ -192,6 +192,25 @@ public class ArtificeWorksDbContext : DbContext
             entity.Property(x => x.SeedOnHand)
                 .HasColumnName("seed_on_hand")
                 .IsRequired();
+
+            // 13.2. The multi-level BOM, in one nullable column: null means "bought in" (the
+            // majority), set means "the factory builds this, using that product's BOM".
+            //
+            // Restrict rather than cascade: deleting the product that makes a component would
+            // otherwise silently delete the component — and with it every bom_line that calls for
+            // it, across three product lines. A catalog this shape should refuse, loudly.
+            entity.Property(x => x.MakeProductId)
+                .HasColumnName("make_product_id");
+
+            entity.HasOne<Product>()
+                .WithMany()
+                .HasForeignKey(x => x.MakeProductId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // Sub-assemblies are the minority of rows and the explosion looks them up by product,
+            // so the index is worth its keep; nulls are not indexed.
+            entity.HasIndex(x => x.MakeProductId)
+                .HasFilter("make_product_id IS NOT NULL");
         });
 
         modelBuilder.Entity<BomLine>(entity =>

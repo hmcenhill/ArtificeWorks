@@ -171,6 +171,9 @@ public class MaterialPickingTests
         public Task<Product?> Get(string id) => Task.FromResult<Product?>(product.ItemId == id ? product : null);
         public Task<Product?> GetWithBom(string id) => Get(id);
         public Task<IReadOnlyList<Product>> List() => Task.FromResult<IReadOnlyList<Product>>([product]);
+        public Task<IReadOnlyList<Product>> ListWithBoms() => List();
+        public Task<IReadOnlyList<string>> ListSubAssemblyProductIds() =>
+            Task.FromResult<IReadOnlyList<string>>([]);
         public Task<Product> Add(Product added) => Task.FromResult(added);
     }
 

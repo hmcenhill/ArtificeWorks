@@ -7,7 +7,14 @@ namespace ArtificeWorks.Application.Data;
 /// its id. The full <see cref="ProductDto"/> (with its bill of materials) is what
 /// <c>GET /products/{id}</c> returns; a picker does not need it.
 /// </summary>
-public sealed record ProductSummaryDto(string ItemId, string ItemName)
+/// <param name="IsSubAssembly">
+/// True when this product exists to build a component rather than to be sold (13.2). The catalog
+/// lists both — a sub-assembly is an ordinary product and the pipeline treats it as one — but a
+/// customer-facing picker filters on this, because "Core Casing Assembly" is not an automaton
+/// anyone orders.
+/// </param>
+public sealed record ProductSummaryDto(string ItemId, string ItemName, bool IsSubAssembly)
 {
-    public ProductSummaryDto(Product product) : this(product.ItemId, product.ItemName) { }
+    public ProductSummaryDto(Product product, bool isSubAssembly)
+        : this(product.ItemId, product.ItemName, isSubAssembly) { }
 }

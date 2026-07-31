@@ -43,6 +43,28 @@ public class ProductRepository : IProductRepository
             .FirstOrDefaultAsync(p => p.ItemId == id);
     }
 
+    public async Task<IReadOnlyList<Product>> ListWithBoms()
+    {
+        // No-tracking, like GetWithBom: the explosion only reads, and a tracked Component would be
+        // a stale copy of a row the reservation path moves with raw SQL.
+        return await _context.Products
+            .AsNoTracking()
+            .Include(p => p.BillOfMaterials)
+                .ThenInclude(line => line.Component)
+            .OrderBy(p => p.ItemId)
+            .ToListAsync();
+    }
+
+    public async Task<IReadOnlyList<string>> ListSubAssemblyProductIds()
+    {
+        return await _context.Components
+            .AsNoTracking()
+            .Where(c => c.MakeProductId != null)
+            .Select(c => c.MakeProductId!)
+            .Distinct()
+            .ToListAsync();
+    }
+
     public async Task<Product> Add(Product product)
     {
         var existing = await Get(product.ItemId);

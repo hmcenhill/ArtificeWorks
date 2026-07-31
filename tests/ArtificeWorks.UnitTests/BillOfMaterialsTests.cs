@@ -46,6 +46,27 @@ public class BillOfMaterialsTests
         Assert.Equal(["CMP-A", "CMP-Z"], demand.Select(d => d.ComponentId));
     }
 
+    /// <summary>
+    /// 13.2's load-bearing non-change. A manufactured component is one row in the demand like any
+    /// other — picking draws it off the shelf and does not care that the factory made it. The
+    /// moment this test needs updating, picking has quietly turned into a recursive planner.
+    /// </summary>
+    [Fact]
+    public void A_made_component_is_demanded_exactly_like_a_bought_one()
+    {
+        var product = new Product("TEST-001", "Test Product");
+        product.AddBomLine(new Component("CMP-BOUGHT", "Bought Part", onHand: 10), 1);
+        product.AddBomLine(
+            new Component("CMP-MADE", "Made Sub-assembly", onHand: 10, makeProductId: "SUBASM-001"), 2);
+
+        var demand = product.ComputeDemand(orderQty: 3);
+
+        Assert.Equal(2, demand.Count);
+        Assert.Equal(6u, demand.Single(d => d.ComponentId == "CMP-MADE").Quantity);
+        // Nothing in the demand row says where the part came from — that is the point.
+        Assert.Equal(3u, demand.Single(d => d.ComponentId == "CMP-BOUGHT").Quantity);
+    }
+
     [Fact]
     public void A_product_without_a_bom_demands_nothing()
     {

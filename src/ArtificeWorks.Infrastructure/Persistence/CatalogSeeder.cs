@@ -6,20 +6,33 @@ namespace ArtificeWorks.Infrastructure.Persistence;
 
 /// <summary>
 /// Seeds the shared-platform catalog: the component materials the factory stocks, the three
-/// product lines, and their flat bills of materials.
+/// product lines, the sub-assemblies two of their shared parts are built from, and every bill of
+/// materials.
 /// <para>
 /// The overlap here is not flavour text. Hermannsson Artifice Works' pitch is that its three
-/// automata share ~70% of their parts, and Epic 11's dashboard renders exactly that
-/// commonality — so the seed makes the claim literally true: every product is 7 shared
-/// platform components plus 3 trade-specific ones, i.e. 70% shared, verifiable by counting
-/// rows (and asserted in the unit tests).
+/// automata share ~70% of their parts, and Epic 11's dashboard renders exactly that commonality —
+/// so the seed makes the claim literally true, at two levels, and the unit and integration tests
+/// assert both numbers rather than trusting them:
 /// </para>
+/// <list type="bullet">
+///   <item><description><strong>70% of the flat BOM</strong> — every product is 7 shared platform
+///   components plus 3 trade-specific ones.</description></item>
+///   <item><description><strong>80% of the exploded leaves</strong> — 12 of the 15 bought
+///   materials underneath a finished automaton are common to all three lines.</description></item>
+///   <item><description><strong>Two shared sub-assemblies</strong> (three, counting the core
+///   casing nested inside one of them) — the control stack and the power core are <em>built</em>,
+///   once, and consumed by all three lines. That is what a shared platform actually means, and it
+///   is what the flat seven rows could only gesture at.</description></item>
+/// </list>
 /// Code-based and idempotent rather than raw SQL in a migration, so the intent stays
 /// readable and re-running it on an existing database is a no-op.
 /// </summary>
 public static class CatalogSeeder
 {
     // ---- The shared platform: every automaton is built on these seven. ----
+    // Two of them — the control stack and the power core — the factory makes rather than buys;
+    // that is declared by the sub-assemblies below, not here, so this stays the list of "what goes
+    // into an automaton" regardless of where each part comes from.
     private static readonly (string Id, string Name, uint OnHand, uint QtyPerUnit)[] SharedPlatform =
     [
         ("CMP-CHASSIS-STD",    "Standard Brass Chassis",   400,  1),
@@ -54,6 +67,36 @@ public static class CatalogSeeder
         ]),
     ];
 
+    // ---- What the factory makes rather than buys: the depth in the multi-level BOM (13.2). ----
+    // Each entry is a product whose whole reason to exist is to produce one component. The nesting
+    // is deliberate and not decoration: SUBASM-CORE calls for CMP-CASING-CORE, which is itself made
+    // by SUBASM-CORE-CASING — so the recursion is exercised by real seed data on every run, not
+    // only by a test fixture that could drift from it.
+    //
+    // A part may be declared in more than one seed's Parts list (component seeding is
+    // first-declaration-wins); CMP-CASING-CORE is declared where it is consumed and made where it
+    // is built, which keeps each list readable as "what this assembly is made of".
+    private static readonly SubAssemblySeed[] SubAssemblies =
+    [
+        new("SUBASM-CTRL-STACK", "Control Stack Assembly", Makes: "CMP-CTRL-STACK",
+        [
+            ("CMP-LINK-GOVERNOR", "Governor Linkage",  300, 1),
+            ("CMP-DRUM-LOGIC",    "Logic Drum",        300, 1),
+            ("CMP-BANK-RELAY",    "Relay Bank",        600, 2),
+        ]),
+        new("SUBASM-CORE", "Aether Core Assembly", Makes: "CMP-CORE-AETHER",
+        [
+            ("CMP-CELL-AETHER",   "Aether Cell",       320, 1),
+            ("CMP-REG-FLUX",      "Flux Regulator",    320, 1),
+            ("CMP-CASING-CORE",   "Core Casing",       320, 1),
+        ]),
+        new("SUBASM-CORE-CASING", "Core Casing Assembly", Makes: "CMP-CASING-CORE",
+        [
+            ("CMP-SHELL-LEAD",    "Leaded Shell",      340, 1),
+            ("CMP-GASKET-SEAL",   "Sealing Gasket",    680, 2),
+        ]),
+    ];
+
     /// <summary>
     /// Adds anything missing and leaves anything already present alone — including on-hand
     /// quantities, so a re-run never silently restocks a factory that has been consuming
@@ -63,15 +106,15 @@ public static class CatalogSeeder
     {
         var components = await SeedComponentsAsync(context, cancellationToken);
 
-        foreach (var line in ProductLines)
+        foreach (var seed in ProductLines.Cast<IProductSeed>().Concat(SubAssemblies))
         {
             var product = await context.Products
                 .Include(p => p.BillOfMaterials)
-                .FirstOrDefaultAsync(p => p.ItemId == line.ProductId, cancellationToken);
+                .FirstOrDefaultAsync(p => p.ItemId == seed.ProductId, cancellationToken);
 
             if (product is null)
             {
-                product = new Product(line.ProductId, line.ProductName);
+                product = new Product(seed.ProductId, seed.ProductName);
                 context.Products.Add(product);
             }
 
@@ -79,13 +122,26 @@ public static class CatalogSeeder
                 .Select(bom => bom.Component.ComponentId)
                 .ToHashSet();
 
-            foreach (var (componentId, qtyPerUnit) in line.BomLines())
+            foreach (var (componentId, qtyPerUnit) in seed.BomLines())
             {
                 if (existingComponentIds.Contains(componentId))
                 {
                     continue;
                 }
                 product.AddBomLine(components[componentId], qtyPerUnit);
+            }
+        }
+
+        // The make links are applied after the products exist, because a component points at the
+        // product that builds it. Unlike on-hand, this is *structure* rather than state — there is
+        // no live value to stomp — so setting it on a re-run is a correct backfill for a database
+        // seeded before 13.2 rather than a re-seed of something in flight.
+        foreach (var subAssembly in SubAssemblies)
+        {
+            var made = components[subAssembly.Makes];
+            if (made.MakeProductId != subAssembly.ProductId)
+            {
+                made.MarkMadeBy(subAssembly.ProductId);
             }
         }
 
@@ -99,7 +155,8 @@ public static class CatalogSeeder
 
         var wanted = SharedPlatform
             .Select(c => (c.Id, c.Name, c.OnHand))
-            .Concat(ProductLines.SelectMany(p => p.Specific.Select(c => (c.Id, c.Name, c.OnHand))));
+            .Concat(ProductLines.SelectMany(p => p.Specific.Select(c => (c.Id, c.Name, c.OnHand))))
+            .Concat(SubAssemblies.SelectMany(s => s.Parts.Select(c => (c.Id, c.Name, c.OnHand))));
 
         foreach (var (id, name, onHand) in wanted)
         {
@@ -115,10 +172,18 @@ public static class CatalogSeeder
         return existing;
     }
 
+    /// <summary>A product the seeder creates, and the BOM lines it should end up with.</summary>
+    private interface IProductSeed
+    {
+        string ProductId { get; }
+        string ProductName { get; }
+        IEnumerable<(string ComponentId, uint QtyPerUnit)> BomLines();
+    }
+
     private sealed record ProductSeed(
         string ProductId,
         string ProductName,
-        (string Id, string Name, uint OnHand, uint QtyPerUnit)[] Specific)
+        (string Id, string Name, uint OnHand, uint QtyPerUnit)[] Specific) : IProductSeed
     {
         /// <summary>The product's full flat BOM: the shared platform first, then its trade parts.</summary>
         public IEnumerable<(string ComponentId, uint QtyPerUnit)> BomLines() =>
@@ -127,12 +192,41 @@ public static class CatalogSeeder
     }
 
     /// <summary>
+    /// A product that exists to build one component. <paramref name="Makes"/> is the component id
+    /// its output is credited to — the link that turns the flat BOM into a tree.
+    /// </summary>
+    private sealed record SubAssemblySeed(
+        string ProductId,
+        string ProductName,
+        string Makes,
+        (string Id, string Name, uint OnHand, uint QtyPerUnit)[] Parts) : IProductSeed
+    {
+        public IEnumerable<(string ComponentId, uint QtyPerUnit)> BomLines() =>
+            Parts.Select(c => (c.Id, c.QtyPerUnit));
+    }
+
+    /// <summary>
     /// Exposed so the "70% shared" claim can be asserted rather than trusted.
     /// </summary>
     public static IReadOnlyList<string> SharedPlatformComponentIds =>
         SharedPlatform.Select(c => c.Id).ToList();
 
-    /// <summary>The seeded product ids, in catalog order.</summary>
+    /// <summary>
+    /// The seeded <em>saleable</em> product ids, in catalog order — the three automata a customer
+    /// orders. <strong>Deliberately excludes the sub-assemblies</strong>: 10.3's order generator
+    /// picks from this list, and a simulated customer ordering a bare core casing would be
+    /// nonsense on the board. See <see cref="SubAssemblyProductIds"/> for those.
+    /// </summary>
     public static IReadOnlyList<string> SeededProductIds =>
         ProductLines.Select(p => p.ProductId).ToList();
+
+    /// <summary>
+    /// The products that exist to build a component rather than to be sold, in catalog order.
+    /// </summary>
+    public static IReadOnlyList<string> SubAssemblyProductIds =>
+        SubAssemblies.Select(s => s.ProductId).ToList();
+
+    /// <summary>The components the factory manufactures, mapped to the product that builds each.</summary>
+    public static IReadOnlyDictionary<string, string> MadeComponents =>
+        SubAssemblies.ToDictionary(s => s.Makes, s => s.ProductId);
 }

@@ -59,6 +59,8 @@ export interface WorkOrderTimeline {
 export interface ProductSummary {
   itemId: string;
   itemName: string;
+  /** 13.2: this product builds a component rather than being sold. The order form hides these. */
+  isSubAssembly: boolean;
 }
 
 /** Mirrors Domain.Models.Materials.UnitStatus — one serialized unit's own state. */

@@ -13,9 +13,17 @@ import { useLiveData } from "../hooks/useLiveData";
  */
 export function CreateOrderView() {
   const navigate = useNavigate();
-  const { data: products, loading, error } = useLiveData<ProductSummary[]>(
+  const { data: catalog, loading, error } = useLiveData<ProductSummary[]>(
     (signal) => fetchProducts(signal),
     [],
+  );
+
+  // 13.2 put sub-assemblies in the catalog — they are ordinary products and the pipeline builds
+  // them like any other. They just aren't things a customer orders, so the template picker offers
+  // only the automata.
+  const products = useMemo(
+    () => catalog?.filter((p) => !p.isSubAssembly),
+    [catalog],
   );
 
   const [itemId, setItemId] = useState("");

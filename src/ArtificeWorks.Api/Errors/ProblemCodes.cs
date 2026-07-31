@@ -13,6 +13,14 @@ public static class ProblemCodes
     public const string WorkOrderNotFound = "work_order_not_found";
     public const string ProductNotFound = "product_not_found";
     public const string ProductAlreadyExists = "product_already_exists";
+
+    /// <summary>
+    /// The product exists but its bill of materials cannot be exploded (13.2): it is cyclic, it is
+    /// deeper than the walk's limit, or it names a product the catalog does not hold. <em>409</em>
+    /// rather than 400 — the request is fine, the catalog is not, and no rephrasing of the request
+    /// would help.
+    /// </summary>
+    public const string BomNotExplodable = "bom_not_explodable";
     public const string TerminalState = "terminal_state";
     public const string MustReleaseFirst = "must_release_first";
     public const string AlreadyHeld = "already_held";
