@@ -89,10 +89,40 @@ public class BillOfMaterialsTests
         var (product, _, _) = ProductWithBom();
         var demand = product.ComputeDemand(2);
 
-        var reservation = new MaterialReservation(Guid.NewGuid(), demand);
+        var reservation = new MaterialReservation(Guid.NewGuid(), attemptNumber: 1, demand);
 
         Assert.Equal(2, reservation.Lines.Count);
         Assert.Equal(12u, reservation.Lines.Single(l => l.ComponentId == "CMP-BEARING").Quantity);
         Assert.Contains("12× CMP-BEARING", reservation.Describe());
+    }
+
+    /// <summary>
+    /// 13.1. A rebuild's pick can draw exactly the same lines as an earlier one, so the attempt has
+    /// to be in the description or the timeline shows one sentence twice and means two draws.
+    /// </summary>
+    [Fact]
+    public void A_rebuilds_reservation_names_its_attempt_so_two_picks_never_read_alike()
+    {
+        var (product, _, _) = ProductWithBom();
+        var demand = product.ComputeDemand(2);
+        var workOrderId = Guid.NewGuid();
+
+        var initial = new MaterialReservation(workOrderId, attemptNumber: 1, demand);
+        var rebuild = new MaterialReservation(workOrderId, attemptNumber: 2, demand);
+
+        // The initial pick keeps its original wording — there is nothing to disambiguate it from.
+        Assert.DoesNotContain("attempt", initial.Describe());
+        Assert.Contains("rebuild attempt 2", rebuild.Describe());
+        Assert.NotEqual(initial.Describe(), rebuild.Describe());
+    }
+
+    [Fact]
+    public void A_reservation_cannot_be_recorded_against_a_nonsense_attempt()
+    {
+        var (product, _, _) = ProductWithBom();
+        var demand = product.ComputeDemand(1);
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new MaterialReservation(Guid.NewGuid(), attemptNumber: 0, demand));
     }
 }

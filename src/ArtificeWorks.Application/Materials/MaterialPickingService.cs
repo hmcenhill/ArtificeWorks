@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 using ArtificeWorks.Application.Chaos;
 using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Messaging;
@@ -18,6 +20,14 @@ namespace ArtificeWorks.Application.Materials;
 /// is testable without a broker, and so a future API/manual "pick now" path can reuse it. The
 /// worker handler is a thin adapter: envelope in, this service out.
 /// </para>
+/// <para>
+/// <strong>One entry point, two triggers</strong> (13.1). <c>work-order.scheduled</c> picks for
+/// attempt 1 and the whole ordered quantity; <c>work-order.rework-required</c> picks for attempt
+/// N+1 and only the outstanding quantity. Nothing else differs — a rebuild goes through the same
+/// draw, the same all-or-nothing rule and the same hand-off to production as the original build,
+/// which is what makes the rework loop a real cycle rather than a shortcut past the expensive
+/// stage.
+/// </para>
 /// <para><strong>Outcomes and their message semantics.</strong> Every outcome here is a
 /// <em>handled</em> one — the caller acks. Insufficient stock is a business result (the order
 /// goes OnHold with a reason), not a transient fault, and a duplicate delivery is by definition
@@ -29,6 +39,9 @@ public sealed class MaterialPickingService
 {
     /// <summary>Author recorded against state-history entries this workflow writes.</summary>
     public const string Author = "picking-worker";
+
+    /// <summary>The attempt a freshly scheduled order picks for.</summary>
+    public const int InitialAttempt = 1;
 
     private readonly IWorkOrderRepository _workOrderRepository;
     private readonly IProductRepository _productRepository;
@@ -62,10 +75,35 @@ public sealed class MaterialPickingService
         _logger = logger;
     }
 
-    public async Task<PickResult> PickMaterials(Guid workOrderId, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// The initial pick: attempt 1, for the whole ordered quantity. What
+    /// <see cref="Messaging.Events.WorkOrderScheduled"/> means.
+    /// </summary>
+    public Task<PickResult> PickMaterials(Guid workOrderId, CancellationToken cancellationToken = default)
+        => PickMaterials(workOrderId, InitialAttempt, demandQty: null, cancellationToken);
+
+    /// <param name="attemptNumber">
+    /// Which build attempt this pick supplies. <strong>Derived by the caller from the event</strong>
+    /// (1 for scheduled, N+1 for rework of attempt N) and never read from the order's current
+    /// state — for the same reason 6.4 derives production's attempt: a redelivery must compute the
+    /// same number, or the unique index would be guarding two different things.
+    /// </param>
+    /// <param name="demandQty">
+    /// How many finished units this pick buys parts for. <c>null</c> means the whole ordered
+    /// quantity, which is only ever right for the initial pick. A rebuild passes
+    /// <see cref="Messaging.Events.ReworkRequired.OutstandingQty"/> — taken from the event rather
+    /// than re-read off the order for exactly the reason above: two deliveries of one rework event
+    /// must request an identical draw.
+    /// </param>
+    public async Task<PickResult> PickMaterials(
+        Guid workOrderId,
+        int attemptNumber,
+        uint? demandQty,
+        CancellationToken cancellationToken = default)
     {
         // Makes the consumer span findable by the one identifier a visitor has (9.1).
         ArtificeWorksTelemetry.StampWorkOrder(workOrderId);
+        Activity.Current?.SetTag(ArtificeWorksTelemetry.AttemptAttribute, attemptNumber);
 
         // 12.2: the single choke point for the stage. Fire any armed broker fault here — before the
         // pick's work opens a transaction — and throw. Because the consume is its own committed write
@@ -84,15 +122,31 @@ public sealed class MaterialPickingService
 
         // Cheap pre-check for the common duplicate case. It is NOT the guarantee — two
         // deliveries can both pass it concurrently — the unique index on the reservation's
-        // work order id is what actually enforces once-per-order. See TryReserve.
-        var existing = await _reservationRepository.GetForWorkOrder(workOrderId, cancellationToken);
+        // (work order id, attempt) is what actually enforces once-per-attempt. See TryReserve.
+        var existing = await _reservationRepository.GetForAttempt(workOrderId, attemptNumber, cancellationToken);
         if (existing is not null)
         {
-            return AlreadyPicked(workOrderId, existing.ReservedUtc);
+            return AlreadyPicked(workOrderId, attemptNumber, existing.ReservedUtc);
+        }
+
+        // Null means "the initial pick, for everything ordered". A rebuild was handed its number by
+        // the event that asked for it, so nothing here re-derives what the order currently needs.
+        var quantity = demandQty ?? workOrder.OrderItemQty;
+        if (quantity == 0)
+        {
+            // Only reachable from a rework event that asked for nothing, which inspection does not
+            // publish — it goes to rework precisely because units are outstanding. Treated as a
+            // handled no-op rather than an exception: nacking would put a message that can never
+            // succeed onto the retry ladder.
+            _logger.LogWarning(
+                "Pick requested for work order {WorkOrderId} attempt {Attempt} with a demand of zero units; "
+                + "nothing to reserve.", workOrderId, attemptNumber);
+            return new PickResult(PickOutcome.NothingToPick,
+                $"Work order {workOrderId} needs no units on attempt {attemptNumber}; nothing to reserve.");
         }
 
         var product = await _productRepository.GetWithBom(workOrder.OrderedItem.ItemId);
-        var demand = product?.ComputeDemand(workOrder.OrderItemQty) ?? [];
+        var demand = product?.ComputeDemand(quantity) ?? [];
         if (demand.Count == 0)
         {
             // A product with no BOM isn't an error — nothing is consumed to build it — but it
@@ -113,15 +167,18 @@ public sealed class MaterialPickingService
         // no retry. That was the demo's worst failure mode: silence.
         var commit = await _reservationRepository.TryReserve(
             workOrderId,
+            attemptNumber,
             demand,
-            stageWithReservation: reservation => StagePickAnnouncement(workOrder, demand, reservation, cancellationToken),
+            stageWithReservation: reservation =>
+                StagePickAnnouncement(workOrder, attemptNumber, quantity, demand, reservation, cancellationToken),
             cancellationToken);
 
         return commit.Outcome switch
         {
             ReservationOutcome.Reserved => OnReserved(workOrder, demand, commit.Reservation!),
-            ReservationOutcome.InsufficientStock => await OnShort(workOrder, commit.ShortComponentIds ?? []),
-            ReservationOutcome.AlreadyReserved => AlreadyPicked(workOrderId, reservedUtc: null),
+            ReservationOutcome.InsufficientStock =>
+                await OnShort(workOrder, attemptNumber, commit.ShortComponentIds ?? []),
+            ReservationOutcome.AlreadyReserved => AlreadyPicked(workOrderId, attemptNumber, reservedUtc: null),
             _ => throw new InvalidOperationException($"Unhandled reservation outcome {commit.Outcome}.")
         };
     }
@@ -142,6 +199,13 @@ public sealed class MaterialPickingService
     /// The consume (<see cref="IInjectedFaultRepository.TryConsume"/>) is a standalone committed
     /// write, run here before any of the pick's work opens a transaction, so a rolled-back stage
     /// cannot un-fire it — the one subtle correctness point of the epic.
+    /// <para>
+    /// 12.2 was designed when a pick happened once per order; since 13.1 it happens once per
+    /// attempt, so this runs several times for a rebuilding order. Nothing changes: <c>TryConsume</c>
+    /// is a one-shot conditional update, so an armed fault still fires on exactly one of those
+    /// picks. That was an unstated premise rather than a claim, which is why there is now a test
+    /// for it rather than a paragraph.
+    /// </para>
     /// </summary>
     private async Task FireBrokerFaultIfArmed(Guid workOrderId, CancellationToken cancellationToken)
     {
@@ -182,6 +246,8 @@ public sealed class MaterialPickingService
     /// </summary>
     private async Task StagePickAnnouncement(
         Domain.Models.WorkOrder workOrder,
+        int attemptNumber,
+        uint quantity,
         IReadOnlyList<ComponentDemand> demand,
         MaterialReservation reservation,
         CancellationToken cancellationToken)
@@ -191,7 +257,10 @@ public sealed class MaterialPickingService
         await _eventPublisher.PublishAsync(new MaterialsReserved(
             workOrder.Id,
             workOrder.OrderedItem.ItemId,
-            workOrder.OrderItemQty,
+            // The quantity this pick bought parts for, not the order's — on a rebuild those differ,
+            // and the number that describes the lines beside it is the useful one.
+            quantity,
+            attemptNumber,
             demand.Select(d => new ReservedComponent(d.ComponentId, d.Quantity)).ToList(),
             reservation.ReservedUtc), cancellationToken);
     }
@@ -212,11 +281,21 @@ public sealed class MaterialPickingService
         return new PickResult(PickOutcome.Picked, summary, demand);
     }
 
-    private async Task<PickResult> OnShort(Domain.Models.WorkOrder workOrder, IReadOnlyList<string> shortComponentIds)
+    private async Task<PickResult> OnShort(
+        Domain.Models.WorkOrder workOrder,
+        int attemptNumber,
+        IReadOnlyList<string> shortComponentIds)
     {
+        // The attempt is named from the rebuild onwards. "Insufficient stock" against an order that
+        // is already InProcess with units on the floor reads like a contradiction otherwise — the
+        // reader needs to know it is the *rebuild* that cannot get parts, not the original build.
+        var scope = attemptNumber == InitialAttempt
+            ? "Insufficient stock"
+            : $"Insufficient stock for rebuild attempt {attemptNumber}";
+
         var summary = shortComponentIds.Count == 0
-            ? "Insufficient stock; no materials reserved."
-            : $"Insufficient stock for {string.Join(", ", shortComponentIds)}; no materials reserved.";
+            ? $"{scope}; no materials reserved."
+            : $"{scope}: {string.Join(", ", shortComponentIds)}; no materials reserved.";
 
         _metrics.Pick("insufficient_stock");
 
@@ -250,11 +329,11 @@ public sealed class MaterialPickingService
     /// note per redelivery would itself be a non-idempotent side effect — but it IS logged, so
     /// idempotency is observable when Epic 12 lets a visitor redeliver a message on purpose.
     /// </summary>
-    private PickResult AlreadyPicked(Guid workOrderId, DateTime? reservedUtc)
+    private PickResult AlreadyPicked(Guid workOrderId, int attemptNumber, DateTime? reservedUtc)
     {
         var summary = reservedUtc is null
-            ? $"Work order {workOrderId} was picked concurrently by another delivery; skipping duplicate."
-            : $"Work order {workOrderId} was already picked at {reservedUtc:O}; skipping duplicate.";
+            ? $"Work order {workOrderId} attempt {attemptNumber} was picked concurrently by another delivery; skipping duplicate."
+            : $"Work order {workOrderId} attempt {attemptNumber} was already picked at {reservedUtc:O}; skipping duplicate.";
 
         _metrics.Pick("duplicate");
         _logger.LogInformation("Duplicate pick skipped (idempotent): {Summary}", summary);

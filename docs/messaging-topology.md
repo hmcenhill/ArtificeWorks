@@ -56,7 +56,7 @@ flowchart LR
     sched(["work-order.<br/>scheduled"]) --> pick["picking"]
     pick --> mr(["work-order.<br/>materials-reserved"])
     mr --> prod["production"]
-    rr(["work-order.<br/>rework-required"]) --> prod
+    rr(["work-order.<br/>rework-required"]) --> pick
     prod --> pc(["work-order.<br/>production-completed"])
     pc --> insp["inspection"]
     insp -->|"shortfall,<br/>rebuilds left"| rr
@@ -69,6 +69,10 @@ flowchart LR
     ss --> disp["dispatch"]
     disp --> done(["work-order.<br/>completed"])
 ```
+
+Note the loop: `rework-required` goes back to **picking**, not to production (13.1). A rebuild draws
+parts for the shortfall and then reaches production the way every attempt does, through
+`materials-reserved` — so production has exactly one inbound key and the cycle really is a cycle.
 
 Each subscriber binds the exact routing keys it acts on, so **the outcome is the routing key**:
 no consumer receives an event and then decides the event wasn't for it. That is the direct
@@ -137,9 +141,9 @@ so whichever service starts first declares it; the declaration is idempotent.
 | --- | --- | --- | --- |
 | `work-order.created` | API | *(nobody yet)* | An order exists |
 | `work-order.scheduled` | API | picking | Start picking materials |
-| `work-order.materials-reserved` | worker (picking) | production | Build attempt 1 |
+| `work-order.materials-reserved` | worker (picking) | production | Build the attempt the payload names |
 | `work-order.production-completed` | worker (production) | inspection | Judge the units this attempt built |
-| `work-order.rework-required` | worker (inspection) | production | Rebuild the shortfall as attempt N+1 |
+| `work-order.rework-required` | worker (inspection) | **picking** | Draw parts for the shortfall as attempt N+1 |
 | `work-order.inspection-passed` | worker (inspection) **and API (on release, 7.3)** | shipping | Full ordered quantity passed; book a carrier |
 | `work-order.shipment-scheduled` | worker (shipping) | dispatch | A carrier accepted; hand the parcel over |
 | `work-order.completed` | worker (dispatch) | **dashboard relay** (11.2) | Parcel dispatched, order closed — the last event in the chain |
@@ -264,7 +268,9 @@ flowchart LR
 ```
 
 - **The consult is one place per stage.** For the two broker faults it is the **top of the pick**
-  (`MaterialPickingService`, on `work-order.scheduled`), before the reservation transaction opens.
+  (`MaterialPickingService`), before the reservation transaction opens. Since 13.1 that runs once per
+  build attempt rather than once per order, which changes nothing: `TryConsume` is a one-shot
+  conditional update, so an armed fault still fires on exactly one pick.
   For `FailInspection` it is the inspection verdict (12.1), which never touches the broker.
 - **`TransientOnce`** throws an ordinary exception → the **transient** branch → the message climbs a
   rung and is redelivered. The consult *consumed* the fault on a separate committed write
@@ -480,22 +486,23 @@ handler's point of view, and all three are answered by keys that already existed
 At-least-once *publish* now meets at-least-once *delivery*: redeliveries happen on consumer
 restarts, on network hiccups, on every rung of the retry ladder, and on every replay.
 
-**Picking (Epic 5)** got its dedupe almost for free. Picking happens exactly once per work
-order, so a **unique index on `material_reservations.work_order_id`** answers "has this been
-done?" outright: a second delivery's insert fails and its inventory decrements roll back with
-it. The dedupe marker and the reservation are the same row, so they commit atomically by
-construction.
+**Picking (Epic 5)** got its dedupe almost for free. A **unique index on `material_reservations`**
+answers "has this been done?" outright: a second delivery's insert fails and its inventory
+decrements roll back with it. The dedupe marker and the reservation are the same row, so they
+commit atomically by construction.
 
-**That trick does not generalise**, and Epic 6 is where it breaks. Production legitimately runs
-many times for one order — that is what the rework loop *is* — so "has this order been
-produced?" stops being a question with an answer. An order-scoped key would make the rebuild
-loop impossible.
+**What that index is on had to change**, and Epic 6 is where the pressure first showed. Production
+legitimately runs many times for one order — that is what the rework loop *is* — so "has this order
+been produced?" stops being a question with an answer. Epic 6 took the honest attempt-scoped key for
+its own tables and left picking order-scoped, which cost it a rebuild that consumed no materials;
+13.1 finished the job and picking is attempt-scoped too. An order-scoped key would have made a real
+rebuild loop impossible.
 
 What must happen exactly once is an **attempt**. So the key is attempt-scoped:
 
 | Table | Unique key | Guards |
 | --- | --- | --- |
-| `material_reservations` | `work_order_id` | one pick per order |
+| `material_reservations` | `(work_order_id, attempt_number)` | one pick per attempt (13.1; was `work_order_id` alone) |
 | `production_runs` | `(work_order_id, attempt_number)` | one build per attempt |
 | `inspection_runs` | `(work_order_id, attempt_number)` | one inspection per attempt |
 | `shipments` | `work_order_id` | one parcel per order |
@@ -505,6 +512,11 @@ What must happen exactly once is an **attempt**. So the key is attempt-scoped:
 6.4 said the attempt, 7.1 said the order again, and 8.4 says the client's request. That is the
 reliability argument this system is making, and it is why at-least-once publishing is safe here
 and would not be somewhere else.
+
+**13.1 moved picking from the first group to the second, and that is the rule working, not bending.**
+Once a rebuild draws its own parts, the thing that must happen once is the pick *for an attempt*, so
+the key followed it. The trick 5.4 introduced is untouched: the reservation row is still its own
+dedupe marker, still committed with the note and the outbox row that describe it.
 
 **Epic 7 goes back to an order-scoped key, and that is not a regression.** The rule 6.4 actually
 established is that the key must follow *the thing that must happen once*. For production that
@@ -520,10 +532,13 @@ system whose "happens once" guarantee doesn't need the database to enforce it �
 because it is the shape of the argument, not a table, that generalises.
 
 The attempt number is **derived deterministically from the event**, never read from the order's
-current state at handling time: `materials-reserved` always means attempt 1, and
-`rework-required` for attempt N always means attempt N+1. A redelivery therefore computes the
-same number and collides, where "look up what attempt we're on" would be exactly the
-check-then-act race the key exists to close.
+current state at handling time: `scheduled` means attempt 1, and `rework-required` for attempt N
+means attempt N+1. Picking derives it there and then *carries* it on `materials-reserved`, so
+production reads it rather than re-deriving it (13.1 — hard-coding 1 stopped being safe the moment a
+second pick became possible). A redelivery of any of the three therefore computes the same number
+and collides, where "look up what attempt we're on" would be exactly the check-then-act race the key
+exists to close. The rebuild's *demand* travels the same way and for the same reason: it is
+`ReworkRequired.OutstandingQty`, not a re-read of what the order currently needs.
 
 Each run row is written in the **same `SaveChanges`** as the work it describes — the new units
 and the order's transition for production; the per-unit verdicts and the resulting transition

@@ -48,9 +48,14 @@ Scheduled ──► [pick materials] ──► MaterialsReserved
           ──► [build units]    ──► ProductionCompleted
           ──► [inspect]        ──► InspectionPassed / ReworkRequired ──┐
           ──► [book + dispatch]──► WorkOrderCompleted                  │
-                        ▲                                              │
-                        └──────── rework loop (bounded) ◄──────────────┘
+              ▲                                                        │
+              └──────── rework loop (bounded) ◄─────────────────────────┘
 ```
+
+The rework loop re-enters at **picking**, not at production (13.1): a rebuild draws parts for the
+outstanding quantity and reaches production the same way the first attempt did, through
+`MaterialsReserved`. Production therefore has exactly one entry point, and a scrapped automaton
+really does take its components with it.
 
 ---
 
@@ -68,12 +73,15 @@ Scheduled ──► [pick materials] ──► MaterialsReserved
   answered by the dedupe keys below; a loss was answered by nothing. If a future stage needs a new
   guard to survive a duplicate, that is a finding about *its key*, not a reason to weaken the outbox.
 - **The dedupe key follows the thing that must happen once.** This is the single rule behind four
-  different-looking implementations: picking is order-scoped (`material_reservations.WorkOrderId`
-  unique — the reservation row *is* the key); production/inspection are attempt-scoped
-  (`production_runs` / `inspection_runs` unique on `(WorkOrderId, AttemptNumber)`, the attempt
-  derived from the event so a redelivery computes the same key); shipping went back to order-scoped
-  (`shipments.work_order_id`); the client edge is request-scoped (`Idempotency-Key`). Each key row is
-  written in the *same* `SaveChanges` as the work it guards, so a losing duplicate rolls back whole.
+  different-looking implementations: picking, production and inspection are all **attempt**-scoped
+  (`material_reservations` since 13.1, alongside `production_runs` / `inspection_runs`, each unique
+  on `(WorkOrderId, AttemptNumber)`, the attempt derived from the event so a redelivery computes the
+  same key); shipping is order-scoped (`shipments.work_order_id`); the client edge is request-scoped
+  (`Idempotency-Key`). Each key row is written in the *same* `SaveChanges` as the work it guards, so
+  a losing duplicate rolls back whole. Picking's row is still the reservation itself — the dedupe
+  marker and the record of what was drawn are one row, which is what makes their atomicity free.
+  **The key widened because the fact did**: once a rebuild draws its own parts, "one pick per order"
+  stops being true before it stops being enforceable.
 - **Ordering is per-host, not global.** Each dispatcher claims and publishes in id order, so one
   host's events leave in the order it wrote them; the two dispatchers are not coordinated. Benign
   today because consecutive events for one order are separated by a delivery and a handler. Revisit
@@ -149,10 +157,12 @@ Scheduled ──► [pick materials] ──► MaterialsReserved
 
 ## Known simplifications (deliberate, revisited later)
 
-- **Rebuilds consume no new materials** (decided Epic 6). Physically a scrapped unit burns its parts,
-  but `material_reservations.WorkOrderId` is unique, so a second pick per order is impossible without
-  reopening that design. The honest fix — widening the reservation key to `(WorkOrderId,
-  AttemptNumber)` to match the run tables — waits for **Epic 13** (multi-level BOMs).
+- **A rebuild held short of parts is a dead end until someone releases it** (13.1). An order that
+  cannot be supplied for attempt N goes OnHold with the attempt named in the reason and draws
+  nothing, exactly as attempt 1 does — but a release re-triggers nothing (see the next entry), so it
+  waits for a human or for the world sweep to retire it. Widening release into a general "resume
+  whatever you were doing" is a real design question deferred to whoever needs it; 13.3 will want it
+  phrased as "a parent whose child finished", not as a release hook.
 - **Release re-triggers exactly one thing, and only at Delivery** (Epic 7). A release that lands in
   Delivery *with no shipment* republishes `InspectionPassed`; every other release is inert. The
   simulation never releases a hold, so refusal stays uncapped and the world sweep retires whatever

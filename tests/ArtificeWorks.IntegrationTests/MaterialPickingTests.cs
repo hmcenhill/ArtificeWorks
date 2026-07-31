@@ -167,8 +167,8 @@ public class MaterialPickingTests : IClassFixture<MaterialPickingFixture>
     public async Task Simultaneous_duplicate_deliveries_still_pick_once()
     {
         // The nastier case: two deliveries of the same event race past the "already picked?"
-        // pre-check together. Only the unique index on the reservation's work order id can
-        // catch this — the loser's decrements roll back with its failed insert.
+        // pre-check together. Only the unique index on the reservation's (work order id, attempt)
+        // can catch this — the loser's decrements roll back with its failed insert.
         var scenario = await Seed("DUPE-RACE", orderQty: 2, ("CHASSIS", onHand: 10, qtyPerUnit: 1));
 
         var results = await Task.WhenAll(
@@ -181,6 +181,125 @@ public class MaterialPickingTests : IClassFixture<MaterialPickingFixture>
 
         await using var context = _fixture.NewContext();
         Assert.Equal(1, await context.MaterialReservations.CountAsync(r => r.WorkOrderId == scenario.WorkOrderId));
+    }
+
+    // ------------------------------------------------------------ 13.1 materials per attempt
+
+    /// <summary>
+    /// The story's headline: a rebuild is a second, real pick. The order draws again, for the
+    /// outstanding quantity rather than the ordered one, and the shelf falls twice.
+    /// </summary>
+    [Fact]
+    public async Task A_rebuild_draws_a_second_reservation_for_the_outstanding_quantity_only()
+    {
+        var scenario = await Seed("REPICK", orderQty: 3, ("CHASSIS", onHand: 20, qtyPerUnit: 2));
+
+        Assert.Equal(PickOutcome.Picked, (await Pick(scenario.WorkOrderId)).Outcome);
+        Assert.Equal(14u, await OnHand(scenario.ComponentId("CHASSIS"))); // 20 - (3 × 2)
+
+        // One unit came back scrapped, so attempt 2 rebuilds one unit and buys parts for one unit.
+        var rebuild = await Pick(scenario.WorkOrderId, attempt: 2, demandQty: 1);
+
+        Assert.Equal(PickOutcome.Picked, rebuild.Outcome);
+        Assert.Equal(12u, await OnHand(scenario.ComponentId("CHASSIS"))); // and 2 more, not 6
+
+        await using var context = _fixture.NewContext();
+        var reservations = await context.MaterialReservations
+            .Include(r => r.Lines)
+            .Where(r => r.WorkOrderId == scenario.WorkOrderId)
+            .OrderBy(r => r.AttemptNumber)
+            .ToListAsync();
+
+        Assert.Equal([1, 2], reservations.Select(r => r.AttemptNumber));
+        Assert.Equal(6u, reservations[0].Lines.Single().Quantity);
+        Assert.Equal(2u, reservations[1].Lines.Single().Quantity);
+
+        // Two picks, two notes — and the rebuild's names its attempt, so the two lines are
+        // distinguishable in the timeline rather than the same sentence twice.
+        var pickNotes = (await History(scenario.WorkOrderId))
+            .Where(h => (h.Notes ?? "").Contains("Materials picked"))
+            .ToList();
+        Assert.Equal(2, pickNotes.Count);
+        Assert.Contains("rebuild attempt 2", pickNotes[1].Notes);
+
+        // And production hears about the rebuild the same way it heard about the first build.
+        var announced = _fixture.Published.OfType<MaterialsReserved>()
+            .Where(e => e.WorkOrderId == scenario.WorkOrderId)
+            .OrderBy(e => e.AttemptNumber)
+            .ToList();
+        Assert.Equal([1, 2], announced.Select(e => e.AttemptNumber));
+        Assert.Equal(1u, announced[1].Quantity); // the outstanding quantity, not the order's 3
+    }
+
+    /// <summary>
+    /// 5.4's guarantee, re-proved at its new scope. Two deliveries of the same <c>ReworkRequired</c>
+    /// must reserve once for that attempt — and, as in 5.4, it is the unique index that promises it,
+    /// not the pre-check, which both deliveries can pass together.
+    /// </summary>
+    [Fact]
+    public async Task Simultaneous_duplicate_rework_deliveries_reserve_once_for_that_attempt()
+    {
+        var scenario = await Seed("REPICK-RACE", orderQty: 2, ("CHASSIS", onHand: 20, qtyPerUnit: 1));
+
+        await Pick(scenario.WorkOrderId);
+        Assert.Equal(18u, await OnHand(scenario.ComponentId("CHASSIS")));
+
+        var results = await Task.WhenAll(
+            Task.Run(() => Pick(scenario.WorkOrderId, attempt: 2, demandQty: 2)),
+            Task.Run(() => Pick(scenario.WorkOrderId, attempt: 2, demandQty: 2)));
+
+        Assert.Equal(1, results.Count(r => r.Outcome == PickOutcome.Picked));
+        Assert.Equal(1, results.Count(r => r.Outcome == PickOutcome.AlreadyPicked));
+
+        // The loser's decrements rolled back with its failed insert: the shelf fell once for the
+        // rebuild, not twice.
+        Assert.Equal(16u, await OnHand(scenario.ComponentId("CHASSIS")));
+
+        await using var context = _fixture.NewContext();
+        Assert.Equal(2, await context.MaterialReservations.CountAsync(r => r.WorkOrderId == scenario.WorkOrderId));
+        Assert.Equal(1, await context.MaterialReservations
+            .CountAsync(r => r.WorkOrderId == scenario.WorkOrderId && r.AttemptNumber == 2));
+
+        // One announcement per attempt, so production is asked to build attempt 2 once.
+        Assert.Single(_fixture.Published.OfType<MaterialsReserved>()
+            .Where(e => e.WorkOrderId == scenario.WorkOrderId && e.AttemptNumber == 2));
+    }
+
+    /// <summary>
+    /// A rebuild that cannot get parts holds the order and draws nothing — the same all-or-nothing
+    /// path attempt 1 takes, with the attempt named in the reason. "Insufficient stock" against an
+    /// order that is already InProcess reads like a contradiction without it.
+    /// </summary>
+    [Fact]
+    public async Task A_rebuild_that_is_short_holds_the_order_and_draws_nothing()
+    {
+        var scenario = await Seed("REPICK-SHORT", orderQty: 2,
+            ("CHASSIS", onHand: 10, qtyPerUnit: 1),
+            ("CORE", onHand: 2, qtyPerUnit: 1));
+
+        Assert.Equal(PickOutcome.Picked, (await Pick(scenario.WorkOrderId)).Outcome);
+        Assert.Equal(0u, await OnHand(scenario.ComponentId("CORE")));
+
+        // The cores are gone, so the rebuild cannot be supplied.
+        var rebuild = await Pick(scenario.WorkOrderId, attempt: 2, demandQty: 1);
+
+        Assert.Equal(PickOutcome.InsufficientStock, rebuild.Outcome);
+
+        // All-or-nothing still holds across the whole rebuild: the plentiful line is untouched.
+        Assert.Equal(8u, await OnHand(scenario.ComponentId("CHASSIS")));
+
+        await using var context = _fixture.NewContext();
+        Assert.Equal(1, await context.MaterialReservations.CountAsync(r => r.WorkOrderId == scenario.WorkOrderId));
+
+        Assert.Equal(WorkOrderStatus.OnHold, await Status(scenario.WorkOrderId));
+        var holdNote = Assert.Single(await History(scenario.WorkOrderId),
+            h => (h.Notes ?? "").Contains("Insufficient stock"));
+        Assert.Contains("rebuild attempt 2", holdNote.Notes);
+        Assert.Contains(scenario.ComponentId("CORE"), holdNote.Notes);
+
+        // Nothing was drawn, so nothing was announced — the rebuild does not reach production.
+        Assert.Empty(_fixture.Published.OfType<MaterialsReserved>()
+            .Where(e => e.WorkOrderId == scenario.WorkOrderId && e.AttemptNumber == 2));
     }
 
     // ------------------------------------------------------------------- 5.1 seeded catalog
@@ -238,6 +357,15 @@ public class MaterialPickingTests : IClassFixture<MaterialPickingFixture>
         await using var scope = _fixture.Services.CreateAsyncScope();
         var service = scope.ServiceProvider.GetRequiredService<MaterialPickingService>();
         return await service.PickMaterials(workOrderId);
+    }
+
+    /// <summary>A rebuild's pick, as <c>ReworkRequiredHandler</c> issues it: attempt N+1, and the
+    /// outstanding quantity taken from the event rather than re-read off the order.</summary>
+    private async Task<PickResult> Pick(Guid workOrderId, int attempt, uint demandQty)
+    {
+        await using var scope = _fixture.Services.CreateAsyncScope();
+        var service = scope.ServiceProvider.GetRequiredService<MaterialPickingService>();
+        return await service.PickMaterials(workOrderId, attempt, demandQty);
     }
 
     private async Task<uint> OnHand(string componentId)

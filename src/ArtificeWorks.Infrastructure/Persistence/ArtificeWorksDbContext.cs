@@ -230,14 +230,20 @@ public class ArtificeWorksDbContext : DbContext
             entity.Property(x => x.Id)
                 .ValueGeneratedNever();
 
+            entity.Property(x => x.AttemptNumber)
+                .IsRequired();
+
             entity.Property(x => x.ReservedUtc)
                 .IsRequired();
 
-            // THE idempotency key (5.4): one pick per work order. A redelivered
-            // WorkOrderScheduled tries to insert a second reservation for the same order and
-            // is rejected by the database, so duplicate consumption cannot double-decrement
-            // inventory even if two workers race past the pre-check simultaneously.
-            entity.HasIndex(x => x.WorkOrderId)
+            // THE idempotency key (5.4, widened by 13.1): one pick per work order *per build
+            // attempt*. A redelivered WorkOrderScheduled or ReworkRequired tries to insert a
+            // second reservation for the same (order, attempt) and is rejected by the database,
+            // so duplicate consumption cannot double-decrement inventory even if two workers
+            // race past the pre-check simultaneously. A genuine rebuild carries the next attempt
+            // number and is a different row — which is how a rebuild came to consume real parts
+            // without loosening the guarantee that guarded the first pick.
+            entity.HasIndex(x => new { x.WorkOrderId, x.AttemptNumber })
                 .IsUnique();
 
             entity.HasOne<WorkOrder>()

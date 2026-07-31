@@ -16,10 +16,12 @@ namespace ArtificeWorks.Application.Production;
 /// for rework), build the outstanding quantity as serialized units, start production, and hand
 /// the pipeline on to inspection.
 /// <para>
-/// <strong>One entry point, two triggers.</strong> <c>work-order.materials-reserved</c> starts
-/// attempt 1; <c>work-order.rework-required</c> continues at attempt N+1. Both arrive here, and
-/// the only difference between them is the attempt number — which is exactly why the rework
-/// loop is a real cycle rather than a special case.
+/// <strong>One entry point, one trigger</strong> (since 13.1). Every attempt arrives as
+/// <c>work-order.materials-reserved</c>, carrying its own attempt number: the initial pick
+/// announces attempt 1, and a rebuild's pick announces attempt N+1. <c>work-order.rework-required</c>
+/// no longer reaches this service at all — it re-enters the pipeline at picking, so a rebuild goes
+/// through every stage the original build did. That is what makes the rework loop a real cycle
+/// rather than a shortcut past the expensive stage.
 /// </para>
 /// <para>
 /// <strong>Production is instant.</strong> No timers, no delay, no <c>due at</c> sweeper; Epic 10's
@@ -27,11 +29,10 @@ namespace ArtificeWorks.Application.Production;
 /// consumer for the whole build and buy nothing.
 /// </para>
 /// <para>
-/// <strong>Rebuilds consume no new materials</strong> (decided at 6.3). Physically a scrapped unit
-/// burns its parts, but Epic 5 made one reservation per work order the idempotency key, so a
-/// second pick is impossible without reopening that design. The original pick covers the order
-/// and scrapped parts are notionally salvaged — a known simplification, revisited in Epic 13
-/// alongside multi-level BOMs.
+/// <strong>Rebuilds consume real materials</strong> (13.1, paying off the simplification 6.3 took
+/// on). A scrapped unit burns its parts, and the units this service builds on attempt N were
+/// supplied by a pick for attempt N — so there is nothing here that needs to know about materials,
+/// only that it does not get asked to build until they exist.
 /// </para>
 /// <para>
 /// <strong>Every outcome acks.</strong> A duplicate attempt, a held order, an out-of-sequence
@@ -63,9 +64,10 @@ public sealed class ProductionService
         _logger = logger;
     }
 
-    /// <param name="attemptNumber">Which attempt to build. Derived by the caller from the event
-    /// (1 for materials-reserved, N+1 for rework of attempt N) so a redelivery computes the
-    /// same number and collides on the run's unique key instead of building a second batch.</param>
+    /// <param name="attemptNumber">Which attempt to build, read off <c>MaterialsReserved</c>. The
+    /// publisher derived it from the event that triggered the pick, so a redelivery of either
+    /// message computes the same number and collides on the run's unique key instead of building a
+    /// second batch.</param>
     public async Task<ProductionResult> Produce(
         Guid workOrderId,
         int attemptNumber,

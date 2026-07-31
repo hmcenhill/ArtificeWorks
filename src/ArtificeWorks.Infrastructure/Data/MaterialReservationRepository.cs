@@ -35,9 +35,11 @@ namespace ArtificeWorks.Infrastructure.Data;
 /// </para>
 /// <para>
 /// <strong>Idempotency.</strong> The reservation insert commits in that same transaction, and
-/// the unique index on <c>WorkOrderId</c> makes a second pick for the same order impossible.
-/// A duplicate delivery that races past the caller's pre-check therefore fails the insert, and
-/// the rollback takes its decrements with it — inventory is drawn exactly once.
+/// the unique index on <c>(WorkOrderId, AttemptNumber)</c> makes a second pick for the same
+/// attempt impossible. A duplicate delivery that races past the caller's pre-check therefore
+/// fails the insert, and the rollback takes its decrements with it — inventory is drawn exactly
+/// once <em>per attempt</em>. A rebuild is a different attempt, so it draws again; that is 13.1's
+/// whole point, and it is why the index widened rather than the pre-check loosening.
 /// </para>
 /// </summary>
 public class MaterialReservationRepository : IMaterialReservationRepository
@@ -51,15 +53,22 @@ public class MaterialReservationRepository : IMaterialReservationRepository
         _context = context;
     }
 
-    public async Task<MaterialReservation?> GetForWorkOrder(Guid workOrderId, CancellationToken cancellationToken = default)
+    public async Task<MaterialReservation?> GetForAttempt(
+        Guid workOrderId,
+        int attemptNumber,
+        CancellationToken cancellationToken = default)
     {
         return await _context.MaterialReservations
             .Include(reservation => reservation.Lines)
-            .FirstOrDefaultAsync(reservation => reservation.WorkOrderId == workOrderId, cancellationToken);
+            .FirstOrDefaultAsync(
+                reservation => reservation.WorkOrderId == workOrderId
+                    && reservation.AttemptNumber == attemptNumber,
+                cancellationToken);
     }
 
     public async Task<ReservationCommitResult> TryReserve(
         Guid workOrderId,
+        int attemptNumber,
         IReadOnlyList<ComponentDemand> demand,
         Func<MaterialReservation, Task>? stageWithReservation = null,
         CancellationToken cancellationToken = default)
@@ -94,7 +103,7 @@ public class MaterialReservationRepository : IMaterialReservationRepository
             }
         }
 
-        var reservation = new MaterialReservation(workOrderId, demand);
+        var reservation = new MaterialReservation(workOrderId, attemptNumber, demand);
         _context.MaterialReservations.Add(reservation);
 
         // The draw has succeeded; let the caller stage whatever else belongs to this pick — since

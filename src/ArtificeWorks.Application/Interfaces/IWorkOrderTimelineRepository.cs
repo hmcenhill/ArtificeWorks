@@ -22,9 +22,12 @@ public interface IWorkOrderTimelineRepository
 /// persists events anyway, and an <c>event</c> kind can then be merged into the same array
 /// without changing its shape.
 /// </summary>
+/// <param name="Reservations">Every pick this order has made, in attempt order. A list rather than
+/// a single row since 13.1: a rebuild draws its own parts, so an order that went round the rework
+/// loop twice has three picks, and the timeline's job is to show all of them.</param>
 public sealed record TimelineData(
     WorkOrder WorkOrder,
-    MaterialReservation? Reservation,
+    IReadOnlyList<MaterialReservation> Reservations,
     IReadOnlyList<ProductionRun> ProductionRuns,
     IReadOnlyList<InspectionRun> InspectionRuns,
     Shipment? Shipment);

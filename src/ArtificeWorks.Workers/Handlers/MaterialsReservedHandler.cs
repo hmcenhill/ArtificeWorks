@@ -13,16 +13,16 @@ namespace ArtificeWorks.Workers.Handlers;
 /// Scheduled until now.
 /// <para>
 /// Thin by design, like every handler here: adopt the inbound correlation id, call the service,
-/// log the outcome. The attempt number is <strong>1</strong>, hard-coded rather than inferred —
-/// materials are reserved exactly once per order (Epic 5's unique index guarantees it), so this
-/// event can only ever mean the initial build. A rebuild arrives as
-/// <see cref="ReworkRequiredHandler"/> instead.
+/// log the outcome. The attempt number comes off the payload. It used to be hard-coded to 1,
+/// which was safe while materials could only be reserved once per order — 13.1 made a rebuild
+/// draw its own parts, so this event now means "attempt N is supplied" and only the publisher
+/// knows which N. It is still derived rather than read from the order: picking took it from the
+/// event that triggered the pick, so a redelivery of either message computes the same attempt
+/// and collides on the production run's unique key (6.4).
 /// </para>
 /// </summary>
 public sealed class MaterialsReservedHandler : IIntegrationEventHandler<MaterialsReserved>
 {
-    private const int InitialAttempt = 1;
-
     private readonly ProductionService _production;
     private readonly CorrelationContext _correlation;
     private readonly ILogger<MaterialsReservedHandler> _logger;
@@ -41,10 +41,12 @@ public sealed class MaterialsReservedHandler : IIntegrationEventHandler<Material
     {
         _correlation.CorrelationId = envelope.CorrelationId;
 
-        var result = await _production.Produce(envelope.Payload.WorkOrderId, InitialAttempt, cancellationToken);
+        var result = await _production.Produce(
+            envelope.Payload.WorkOrderId, envelope.Payload.AttemptNumber, cancellationToken);
 
         _logger.LogInformation(
-            "Production for work order {WorkOrderId} from {EventType} ({EventId}): {Outcome} — {Summary}",
-            envelope.Payload.WorkOrderId, envelope.EventType, envelope.EventId, result.Outcome, result.Summary);
+            "Production for work order {WorkOrderId} attempt {Attempt} from {EventType} ({EventId}): {Outcome} — {Summary}",
+            envelope.Payload.WorkOrderId, envelope.Payload.AttemptNumber,
+            envelope.EventType, envelope.EventId, result.Outcome, result.Summary);
     }
 }

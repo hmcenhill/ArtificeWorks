@@ -361,6 +361,82 @@ public class ProductionInspectionTests : IClassFixture<ProductionFixture>
         Assert.Equal(WorkOrderStatus.Delivery, await Status(scenario.WorkOrderId));
     }
 
+    /// <summary>
+    /// 13.1's headline against real Postgres, driven the way the broker drives it: the rework event
+    /// re-enters the pipeline at <em>picking</em>, so the rebuild draws real parts and the shelf
+    /// falls twice for one order. Attempt numbers and quantities come off the published event, as
+    /// <c>ReworkRequiredHandler</c> takes them.
+    /// </summary>
+    [Fact]
+    public async Task A_rework_cycle_re_enters_at_picking_so_the_rebuild_consumes_real_components()
+    {
+        var scenario = await Seed("REPICK-CYCLE", orderQty: 3);
+        const string chassis = "CMP-REPICK-CYCLE-CHASSIS";
+
+        Assert.Equal(PickOutcome.Picked, (await Pick(scenario.WorkOrderId)).Outcome);
+        Assert.Equal(97u, await OnHand(chassis)); // 100 - 3
+
+        await Produce(scenario.WorkOrderId, attempt: 1);
+
+        _fixture.Verdicts.FailNext(2);
+        Assert.Equal(InspectionOutcome.ReworkRequired, (await Inspect(scenario.WorkOrderId, attempt: 1)).Outcome);
+
+        var rework = Assert.Single(PublishedFor<ReworkRequired>(scenario.WorkOrderId));
+        Assert.Equal(2u, rework.OutstandingQty);
+
+        // What the handler does with that event, verbatim.
+        var rebuildPick = await Pick(scenario.WorkOrderId, rework.AttemptNumber + 1, rework.OutstandingQty);
+
+        Assert.Equal(PickOutcome.Picked, rebuildPick.Outcome);
+        Assert.Equal(95u, await OnHand(chassis)); // and 2 more for the shortfall — not free, not 3
+
+        // The pick announced attempt 2, which is the only reason production knows what to build:
+        // MaterialsReservedHandler stopped hard-coding 1.
+        var reserved = PublishedFor<MaterialsReserved>(scenario.WorkOrderId).OrderBy(e => e.AttemptNumber).ToList();
+        Assert.Equal([1, 2], reserved.Select(e => e.AttemptNumber));
+        Assert.Equal(2u, reserved[1].Quantity);
+
+        // ...and the rest of the loop is unchanged: the rebuild builds the shortfall and passes.
+        var rebuild = await Produce(scenario.WorkOrderId, reserved[1].AttemptNumber);
+        Assert.Equal(2, rebuild.SerialNumbers!.Count);
+        Assert.Equal(InspectionOutcome.Passed, (await Inspect(scenario.WorkOrderId, attempt: 2)).Outcome);
+        Assert.Equal(WorkOrderStatus.Delivery, await Status(scenario.WorkOrderId));
+
+        await using var context = _fixture.NewContext();
+        Assert.Equal(2, await context.MaterialReservations
+            .CountAsync(r => r.WorkOrderId == scenario.WorkOrderId));
+    }
+
+    /// <summary>
+    /// 12.2 was designed when a pick happened once per order. It now happens once per attempt, so
+    /// "the fault fires exactly once" needed re-proving rather than re-reading: <c>TryConsume</c> is
+    /// a one-shot conditional update, so an armed fault fires on one pick and every later pick —
+    /// redelivery or rebuild — runs clean.
+    /// </summary>
+    [Fact]
+    public async Task An_armed_transient_fault_fires_on_one_pick_even_though_an_order_now_picks_more_than_once()
+    {
+        var scenario = await Seed("CHAOS-REPICK", orderQty: 2);
+
+        await Arm(scenario.WorkOrderId, InjectedFaultKind.TransientOnce);
+
+        // The first pick throws — the fault fired, and the message would climb 8.2's ladder.
+        var thrown = await Assert.ThrowsAsync<InjectedFaultException>(() => Pick(scenario.WorkOrderId));
+        Assert.Equal(InjectedFaultKind.TransientOnce, thrown.Kind);
+
+        // The redelivery finds it disarmed and completes the pick.
+        Assert.Equal(PickOutcome.Picked, (await Pick(scenario.WorkOrderId)).Outcome);
+
+        // And so does the rebuild's pick, which is the new question: a second visit to the same
+        // consult point must not re-fire a spent fault.
+        Assert.Equal(PickOutcome.Picked, (await Pick(scenario.WorkOrderId, attempt: 2, demandQty: 1)).Outcome);
+
+        await using var context = _fixture.NewContext();
+        var fault = Assert.Single(await context.InjectedFaults.AsNoTracking()
+            .Where(f => f.WorkOrderId == scenario.WorkOrderId).ToListAsync());
+        Assert.NotNull(fault.FiredUtc);
+    }
+
     private async Task Arm(Guid workOrderId, InjectedFaultKind kind)
     {
         await using var scope = _fixture.Services.CreateAsyncScope();
@@ -422,6 +498,20 @@ public class ProductionInspectionTests : IClassFixture<ProductionFixture>
     {
         await using var scope = _fixture.Services.CreateAsyncScope();
         return await scope.ServiceProvider.GetRequiredService<MaterialPickingService>().PickMaterials(workOrderId);
+    }
+
+    /// <summary>A rebuild's pick, as <c>ReworkRequiredHandler</c> issues it from the event.</summary>
+    private async Task<PickResult> Pick(Guid workOrderId, int attempt, uint demandQty)
+    {
+        await using var scope = _fixture.Services.CreateAsyncScope();
+        return await scope.ServiceProvider.GetRequiredService<MaterialPickingService>()
+            .PickMaterials(workOrderId, attempt, demandQty);
+    }
+
+    private async Task<uint> OnHand(string componentId)
+    {
+        await using var context = _fixture.NewContext();
+        return (await context.Components.AsNoTracking().SingleAsync(c => c.ComponentId == componentId)).OnHand;
     }
 
     private async Task<ProductionResult> Produce(Guid workOrderId, int attempt)

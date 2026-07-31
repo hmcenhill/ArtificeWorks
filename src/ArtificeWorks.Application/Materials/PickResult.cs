@@ -16,7 +16,13 @@ public enum PickOutcome
     WorkOrderNotFound,
 
     /// <summary>The product has no BOM, so there is nothing to reserve.</summary>
-    NoBillOfMaterials
+    NoBillOfMaterials,
+
+    /// <summary>
+    /// The pick was asked for zero units (13.1). Only a rework event could ask that, and inspection
+    /// never publishes one — but a demand of nothing is a handled no-op, not a fault to retry.
+    /// </summary>
+    NothingToPick
 }
 
 /// <param name="Summary">Human-readable description of what happened, as written to state history.</param>

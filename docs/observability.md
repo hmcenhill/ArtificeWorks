@@ -94,7 +94,8 @@ Worked end to end. You start with an order id and nothing else.
 curl localhost:5000/work-orders/$ORDER/timeline
 ```
 
-One flat chronological array: state changes, the pick, the build, verdicts per unit, the shipment.
+One flat chronological array: state changes, a pick per build attempt (13.1), the build, verdicts per
+unit, the shipment.
 For most questions this is the whole answer, and it needs no observability stack at all.
 
 If the order is stuck, this tells you *which stage* it is stuck in. That determines everything
@@ -216,7 +217,7 @@ Prometheus mangles them: dots become underscores and counters gain `_total`. So
 |---|---|---|
 | `artificeworks.work_orders.created` | counter | `origin` |
 | `artificeworks.work_orders.transitions` | counter | `from`, `to`, `origin` |
-| `artificeworks.materials.picks` | counter | `outcome` |
+| `artificeworks.materials.picks` | counter | `outcome` — one per build **attempt** since 13.1, so this exceeds the order count whenever rework happens |
 | `artificeworks.units.built` / `.passed` / `.scrapped` | counter | — |
 | `artificeworks.production.rework_attempts` | counter | — |
 | `artificeworks.shipments.booked` / `.dispatched` / `.refused` | counter | `carrier` |

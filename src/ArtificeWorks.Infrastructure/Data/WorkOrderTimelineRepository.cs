@@ -33,10 +33,15 @@ public class WorkOrderTimelineRepository : IWorkOrderTimelineRepository
             return null;
         }
 
-        var reservation = await _context.MaterialReservations
+        // Every pick, not the first one. Before 13.1 this was a FirstOrDefault, which was exact
+        // while the schema allowed one reservation per order — and would have silently hidden every
+        // rebuild's draw the moment it allowed more.
+        var reservations = await _context.MaterialReservations
             .AsNoTracking()
             .Include(r => r.Lines)
-            .FirstOrDefaultAsync(r => r.WorkOrderId == workOrderId, cancellationToken);
+            .Where(r => r.WorkOrderId == workOrderId)
+            .OrderBy(r => r.AttemptNumber)
+            .ToListAsync(cancellationToken);
 
         var productionRuns = await _context.ProductionRuns
             .AsNoTracking()
@@ -57,7 +62,7 @@ public class WorkOrderTimelineRepository : IWorkOrderTimelineRepository
 
         return new TimelineData(
             workOrder,
-            reservation,
+            reservations,
             productionRuns,
             inspectionRuns,
             shipment);

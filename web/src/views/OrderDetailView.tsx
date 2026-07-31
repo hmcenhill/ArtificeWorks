@@ -153,8 +153,13 @@ function TimelineDetail({ entry }: { entry: TimelineEntry }) {
     case "pick": {
       const lines = asArray(d.lines);
       if (lines.length === 0) return null;
+      // An order has one pick per build attempt (13.1), so the attempt is what tells two
+      // otherwise identical draws apart. Only shown from the rebuild on — every order has an
+      // attempt 1, and labelling it adds noise to the common case.
+      const attempt = num(d.attemptNumber);
       return (
         <ul className="chip-list">
+          {attempt > 1 && <li className="chip">rebuild attempt {attempt}</li>}
           {lines.map((line, i) => (
             <li key={i} className="chip">
               {str(line?.componentId)} × {num(line?.quantity)}

@@ -41,13 +41,17 @@ public class WorkOrderTimelineDto
                 new { status = change.Status.ToString(), notes = change.Notes }));
         }
 
-        if (data.Reservation is { } reservation)
+        // One entry per pick. An order that went round the rework loop drew parts for each rebuild
+        // (13.1), and each of those draws is its own line in the story — the attempt is in the
+        // detail so a client can pair a pick with the build it supplied.
+        foreach (var reservation in data.Reservations)
         {
             entries.Add(new TimelineEntryDto(
                 reservation.ReservedUtc, TimelineKind.Pick, by: null,
                 $"Materials picked: {reservation.Describe()}.",
                 new
                 {
+                    attemptNumber = reservation.AttemptNumber,
                     lines = reservation.Lines
                         .Select(line => new { componentId = line.ComponentId, quantity = line.Quantity })
                         .ToList()

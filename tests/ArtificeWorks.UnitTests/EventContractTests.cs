@@ -75,6 +75,7 @@ public class EventContractTests
             WorkOrderId: Guid.NewGuid(),
             ProductId: "CUSTODIAN-STD",
             Quantity: 2,
+            AttemptNumber: 2,
             Lines:
             [
                 new ReservedComponent("CMP-CHASSIS-STD", 2),
@@ -94,6 +95,10 @@ public class EventContractTests
         Assert.Equal(payload.ProductId, restored.Payload.ProductId);
         Assert.Equal(payload.Quantity, restored.Payload.Quantity);
         Assert.Equal(payload.ReservedUtc, restored.Payload.ReservedUtc);
+        // The attempt is the production stage's dedupe key (13.1). It used to be hard-coded to 1 by
+        // the consumer; losing it on the wire now would silently rebuild the wrong attempt rather
+        // than fail loudly — which is why a rebuild's number is asserted here and not just a 1.
+        Assert.Equal(2, restored.Payload.AttemptNumber);
         // The reserved lines are the point of the event — Epic 6 picks up from here.
         Assert.Equal(payload.Lines, restored.Payload.Lines);
     }
@@ -186,7 +191,7 @@ public class EventContractTests
         // Guards against an accidental rename/version bump of the wire contract.
         Assert.Equal("work-order.created", new WorkOrderCreated(Guid.NewGuid(), "p", "P", 1, "r", DateTime.UtcNow).EventType);
         Assert.Equal("work-order.scheduled", new WorkOrderScheduled(Guid.NewGuid(), "p", "P", 1, DateTime.UtcNow).EventType);
-        Assert.Equal("work-order.materials-reserved", new MaterialsReserved(Guid.NewGuid(), "p", 1, [], DateTime.UtcNow).EventType);
+        Assert.Equal("work-order.materials-reserved", new MaterialsReserved(Guid.NewGuid(), "p", 1, 1, [], DateTime.UtcNow).EventType);
         Assert.Equal("work-order.production-completed", new ProductionCompleted(Guid.NewGuid(), "p", [], 1, DateTime.UtcNow).EventType);
         Assert.Equal("work-order.rework-required", new ReworkRequired(Guid.NewGuid(), "p", [], 1, 1, DateTime.UtcNow).EventType);
         Assert.Equal("work-order.inspection-passed", new InspectionPassed(Guid.NewGuid(), "p", [], DateTime.UtcNow).EventType);

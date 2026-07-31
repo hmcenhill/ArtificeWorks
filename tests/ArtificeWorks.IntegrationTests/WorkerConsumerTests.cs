@@ -200,7 +200,7 @@ public class WorkerConsumerTests : IAsyncLifetime
         }
 
         var scheduledKey = RoutingKeyOf(new WorkOrderScheduled(Guid.Empty, "", "", 0, default));
-        var reservedKey = RoutingKeyOf(new MaterialsReserved(Guid.Empty, "", 0, [], default));
+        var reservedKey = RoutingKeyOf(new MaterialsReserved(Guid.Empty, "", 0, 0, [], default));
         var passedKey = RoutingKeyOf(new InspectionPassed(Guid.Empty, "", [], default));
         var completedKey = RoutingKeyOf(new WorkOrderCompleted(Guid.Empty, "", "", "", [], default));
 

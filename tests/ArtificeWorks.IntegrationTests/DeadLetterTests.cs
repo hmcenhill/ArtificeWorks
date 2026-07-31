@@ -359,17 +359,21 @@ public sealed class ExplodingReservationRepository : IMaterialReservationReposit
         _switch = @switch;
     }
 
-    public Task<MaterialReservation?> GetForWorkOrder(Guid workOrderId, CancellationToken cancellationToken = default)
+    public Task<MaterialReservation?> GetForAttempt(
+        Guid workOrderId,
+        int attemptNumber,
+        CancellationToken cancellationToken = default)
         => _switch.Explode
             ? throw new InvalidOperationException("Arranged transient failure reading reservations.")
-            : _inner.GetForWorkOrder(workOrderId, cancellationToken);
+            : _inner.GetForAttempt(workOrderId, attemptNumber, cancellationToken);
 
     public Task<ReservationCommitResult> TryReserve(
         Guid workOrderId,
+        int attemptNumber,
         IReadOnlyList<ComponentDemand> demand,
         Func<MaterialReservation, Task>? stageWithReservation = null,
         CancellationToken cancellationToken = default)
         => _switch.Explode
             ? throw new InvalidOperationException("Arranged transient failure reserving materials.")
-            : _inner.TryReserve(workOrderId, demand, stageWithReservation, cancellationToken);
+            : _inner.TryReserve(workOrderId, attemptNumber, demand, stageWithReservation, cancellationToken);
 }
