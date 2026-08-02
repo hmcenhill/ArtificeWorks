@@ -188,6 +188,13 @@ public class MaterialPickingTests
             IReadOnlyCollection<WorkOrderOrigin> origins,
             int limit)
             => Task.FromResult<IReadOnlyList<Application.Data.WorkOrderListItemDto>>([]);
+
+        // 13.3. A pick that comes up short asks this whether a sub-assembly is already on order. A
+        // unit test of picking in isolation resolves no SubAssemblyService, so it is never reached;
+        // it answers like an empty factory rather than throwing if one ever does.
+        public Task<IReadOnlyList<string>> ListOpenSubAssemblyRequests(
+            Guid parentWorkOrderId, int parentAttemptNumber, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<string>>([]);
     }
 
     private sealed class RecordingPublisher : IEventPublisher

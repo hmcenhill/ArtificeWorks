@@ -10,6 +10,7 @@ import type {
   ShipmentStatus,
   SimulationSettings,
   StockUnit,
+  SubAssemblyChild,
   SystemStats,
   UnitStatus,
   WorkOrder,
@@ -100,6 +101,17 @@ interface RawWorkOrder {
   buildAttempt: number;
   units: RawStockUnit[];
   shipment: RawShipment | null;
+  parentWorkOrderId: string | null;
+  forComponentId: string | null;
+  children: RawSubAssemblyChild[] | null;
+  liveChildCount: number;
+}
+interface RawSubAssemblyChild {
+  id: string;
+  status: number;
+  forComponentId: string | null;
+  qty: number;
+  isLive: boolean;
 }
 interface RawStockUnit {
   serialNumber: string;
@@ -134,6 +146,12 @@ function mapWorkOrder(raw: RawWorkOrder): WorkOrder {
     shipment: raw.shipment
       ? { ...raw.shipment, status: decode(SHIPMENT_STATUS_NAMES, raw.shipment.status, "Booked") }
       : null,
+    parentWorkOrderId: raw.parentWorkOrderId ?? null,
+    forComponentId: raw.forComponentId ?? null,
+    children: (raw.children ?? []).map(
+      (c): SubAssemblyChild => ({ ...c, status: decode(STATUS_NAMES, c.status, "Intake") }),
+    ),
+    liveChildCount: raw.liveChildCount ?? 0,
   };
 }
 

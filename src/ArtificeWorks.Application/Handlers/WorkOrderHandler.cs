@@ -265,7 +265,12 @@ public class WorkOrderHandler
                 workOrder.Id,
                 workOrder.OrderedItem.ItemId,
                 workOrder.OrderedItem.ItemName,
-                workOrder.OrderItemQty,
+                // Outstanding rather than ordered, and the attempt spelled out rather than assumed
+                // (13.3). For an order leaving Intake the two readings are identical — nothing has
+                // been built, so outstanding *is* ordered, and the attempt *is* 1. Saying it this
+                // way means the release path can reuse this event without a special case.
+                workOrder.OutstandingQty,
+                workOrder.BuildAttempt + 1,
                 workOrder.UpdatedUtc));
         }
         return Task.CompletedTask;

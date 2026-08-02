@@ -3,6 +3,7 @@ using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Production;
 using ArtificeWorks.Application.Recovery;
 using ArtificeWorks.Application.Shipping;
+using ArtificeWorks.Application.SubAssemblies;
 using ArtificeWorks.Infrastructure.Data;
 
 using Microsoft.Extensions.Configuration;
@@ -75,6 +76,26 @@ public static class WorkflowServiceCollectionExtensions
 
         services.AddScoped<IShipmentRepository, ShipmentRepository>();
         services.AddScoped<ShippingService>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers 13.3's sub-assembly loop: spawning a child work order for a short manufactured
+    /// component, putting a finished child's units away as stock, and releasing the parent.
+    /// <para>
+    /// <strong>The worker only</strong>, unlike Epics 6 and 7's registrations — all three moments
+    /// are stages, and none of them has an API path a visitor drives by hand. If one ever does, this
+    /// call goes in the API too: <c>MaterialPickingService</c> takes <see cref="SubAssemblyService"/>
+    /// as an <em>optional</em> dependency, so a host that resolved picking without it would quietly
+    /// hold an order instead of making the missing part rather than failing to start.
+    /// </para>
+    /// </summary>
+    public static IServiceCollection AddSubAssemblies(this IServiceCollection services)
+    {
+        services.AddScoped<IComponentStockRepository, ComponentStockRepository>();
+        services.AddScoped<SubAssemblyService>();
+        services.AddScoped<StockPutawayService>();
 
         return services;
     }

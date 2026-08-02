@@ -20,10 +20,17 @@ namespace ArtificeWorks.Application.Data;
 /// <c>kind</c> is a string for the same reason.
 /// </para>
 /// </summary>
+/// <param name="IsSubAssembly">
+/// True when this order is building a part for another order (13.3). One boolean rather than the
+/// parent id, because the board only needs to draw a badge — and it needs <em>something</em>, since
+/// a child inherits its parent's <see cref="WorkOrderOrigin"/> and the existing filter therefore
+/// cannot tell the two apart. A spawned child nobody can see is a feature nobody can demo.
+/// </param>
 public sealed record WorkOrderListItemDto(
     Guid Id,
     string ProductName,
     [property: JsonConverter(typeof(JsonStringEnumConverter))] WorkOrderStatus Status,
     [property: JsonConverter(typeof(JsonStringEnumConverter))] WorkOrderOrigin Origin,
     DateTime CreatedUtc,
-    DateTime UpdatedUtc);
+    DateTime UpdatedUtc,
+    bool IsSubAssembly = false);

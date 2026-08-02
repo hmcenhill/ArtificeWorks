@@ -33,11 +33,21 @@ public static class CatalogSeeder
     // Two of them — the control stack and the power core — the factory makes rather than buys;
     // that is declared by the sub-assemblies below, not here, so this stays the list of "what goes
     // into an automaton" regardless of where each part comes from.
+    //
+    // 13.3 deliberately stocks those two THIN (24 each, against 280–2400 for the bought parts).
+    // The child-order loop is the epic's showpiece and it only fires when a made component runs out,
+    // so a shelf sized like the bought ones would mean nobody ever sees it. 24 is roughly eight
+    // simulated orders — often enough that a visitor watching for a few minutes sees the board
+    // deepen, rare enough that most orders still run straight through.
+    //
+    // These three numbers are the demo's pacing dial. Raise them if children are appearing so often
+    // that the board is mostly sub-assemblies; lower them if the showpiece never shows. 10.4's sweep
+    // restocks to whatever is set here, so the world keeps healing either way.
     private static readonly (string Id, string Name, uint OnHand, uint QtyPerUnit)[] SharedPlatform =
     [
         ("CMP-CHASSIS-STD",    "Standard Brass Chassis",   400,  1),
-        ("CMP-CORE-AETHER",    "Aether Power Core",        320,  1),
-        ("CMP-CTRL-STACK",     "Control Stack",            300,  1),
+        ("CMP-CORE-AETHER",    "Aether Power Core",         24,  1),
+        ("CMP-CTRL-STACK",     "Control Stack",             24,  1),
         ("CMP-GOV-ESCAPEMENT", "Escapement Governor",      280,  1),
         ("CMP-LOOM-COPPER",    "Copper Wiring Loom",       900,  2),
         ("CMP-PANEL-BRASS",    "Brass Casing Panel",      1600,  4),
@@ -88,7 +98,10 @@ public static class CatalogSeeder
         [
             ("CMP-CELL-AETHER",   "Aether Cell",       320, 1),
             ("CMP-REG-FLUX",      "Flux Regulator",    320, 1),
-            ("CMP-CASING-CORE",   "Core Casing",       320, 1),
+            // Thinner still, and on purpose: this is the *nested* made component, so draining it is
+            // what produces a grandchild — a core assembly that has to schedule its own casing.
+            // Two levels of spawned work is what proves the recursion is real rather than asserted.
+            ("CMP-CASING-CORE",   "Core Casing",        12, 1),
         ]),
         new("SUBASM-CORE-CASING", "Core Casing Assembly", Makes: "CMP-CASING-CORE",
         [

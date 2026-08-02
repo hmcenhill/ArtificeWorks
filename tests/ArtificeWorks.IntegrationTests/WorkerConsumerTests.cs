@@ -112,6 +112,11 @@ public class WorkerConsumerTests : IAsyncLifetime
         // so the unattended factory this test claims to demonstrate is the one that ships.
         builder.Services.AddShipping(builder.Configuration);
 
+        // 13.3's sub-assembly loop. Registered here for the same reason everything above it is:
+        // this host mirrors the worker's own registrations, and InspectionPassedHandler now asks
+        // "is this order internal?" before it reaches for a carrier.
+        builder.Services.AddSubAssemblies();
+
         // Full messaging (connection + publisher) so this test drives the REAL publish path,
         // plus the consumption plumbing and every handler in the pipeline.
         builder.Services.AddRabbitMqMessaging(builder.Configuration);
@@ -128,6 +133,7 @@ public class WorkerConsumerTests : IAsyncLifetime
         builder.Services.AddEventHandler<ReworkRequired, ReworkRequiredHandler>();
         builder.Services.AddEventHandler<InspectionPassed, InspectionPassedHandler>();
         builder.Services.AddEventHandler<ShipmentScheduled, ShipmentScheduledHandler>();
+        builder.Services.AddEventHandler<WorkOrderCompleted, WorkOrderCompletedHandler>();
 
         _host = builder.Build();
 
@@ -199,10 +205,10 @@ public class WorkerConsumerTests : IAsyncLifetime
             workOrderId = workOrder.Id;
         }
 
-        var scheduledKey = RoutingKeyOf(new WorkOrderScheduled(Guid.Empty, "", "", 0, default));
+        var scheduledKey = RoutingKeyOf(new WorkOrderScheduled(Guid.Empty, "", "", 0, 0, default));
         var reservedKey = RoutingKeyOf(new MaterialsReserved(Guid.Empty, "", 0, 0, [], default));
         var passedKey = RoutingKeyOf(new InspectionPassed(Guid.Empty, "", [], default));
-        var completedKey = RoutingKeyOf(new WorkOrderCompleted(Guid.Empty, "", "", "", [], default));
+        var completedKey = RoutingKeyOf(new WorkOrderCompleted(Guid.Empty, "", null, null, [], default));
 
         // Declare + bind the worker's queue ourselves before publishing (idempotent with the
         // consumer's own declare) so the message can't be dropped by the direct exchange if
@@ -235,7 +241,7 @@ public class WorkerConsumerTests : IAsyncLifetime
             scope.ServiceProvider.GetRequiredService<CorrelationContext>().CorrelationId = correlationId;
             var publisher = scope.ServiceProvider.GetRequiredService<IEventPublisher>();
             await publisher.PublishAsync(new WorkOrderScheduled(
-                workOrderId, product.ItemId, product.ItemName, 2, DateTime.UtcNow));
+                workOrderId, product.ItemId, product.ItemName, 2, 1, DateTime.UtcNow));
 
             await scope.ServiceProvider.GetRequiredService<ArtificeWorksDbContext>().SaveChangesAsync();
         }
@@ -395,7 +401,7 @@ public class WorkerConsumerTests : IAsyncLifetime
             using var scope = _host.Services.CreateScope();
             scope.ServiceProvider.GetRequiredService<CorrelationContext>().CorrelationId = Guid.NewGuid();
             await scope.ServiceProvider.GetRequiredService<IEventPublisher>().PublishAsync(
-                new WorkOrderScheduled(workOrderId, product.ItemId, product.ItemName, 1, DateTime.UtcNow));
+                new WorkOrderScheduled(workOrderId, product.ItemId, product.ItemName, 1, 1, DateTime.UtcNow));
             await scope.ServiceProvider.GetRequiredService<ArtificeWorksDbContext>().SaveChangesAsync();
         }
 

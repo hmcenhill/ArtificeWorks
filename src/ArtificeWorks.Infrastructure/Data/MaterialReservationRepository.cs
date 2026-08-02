@@ -80,6 +80,8 @@ public class MaterialReservationRepository : IMaterialReservationRepository
 
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
+        var shortLines = new List<ComponentDemand>();
+
         foreach (var line in demand)
         {
             // uint doesn't round-trip to a Postgres parameter type; the column is bigint
@@ -96,11 +98,21 @@ public class MaterialReservationRepository : IMaterialReservationRepository
 
             if (rowsAffected == 0)
             {
-                // Either the component is short or it doesn't exist. Both mean this order
-                // cannot be picked; roll back so no earlier line stays decremented.
-                await transaction.RollbackAsync(cancellationToken);
-                return ReservationCommitResult.Short([line.ComponentId]);
+                // Either the component is short or it doesn't exist. Either way this order cannot
+                // be picked — but keep going rather than aborting here, because 13.3's caller needs
+                // *every* shortage to know how many sub-assembly orders to raise. The transaction
+                // still rolls back below, so the lines drawn after this point are undone with the
+                // ones drawn before it, and the all-or-nothing guarantee is untouched. The draw
+                // order is unchanged too, which is what keeps concurrent picks from deadlocking.
+                shortLines.Add(line);
             }
+        }
+
+        if (shortLines.Count > 0)
+        {
+            var shortages = await DescribeShortages(shortLines, cancellationToken);
+            await transaction.RollbackAsync(cancellationToken);
+            return ReservationCommitResult.Short(shortages);
         }
 
         var reservation = new MaterialReservation(workOrderId, attemptNumber, demand);
@@ -148,6 +160,35 @@ public class MaterialReservationRepository : IMaterialReservationRepository
         }
 
         return ReservationCommitResult.Reserved(reservation);
+    }
+
+    /// <summary>
+    /// Pairs each shortage with what the shelf actually holds, so the caller can size the gap
+    /// rather than only name it (13.3 spawns a child order for exactly the shortfall).
+    /// <para>
+    /// Read inside the transaction that is about to roll back, no-tracking: the refused
+    /// <c>UPDATE</c> took no row lock (it matched nothing), so this is a snapshot rather than a
+    /// reservation of anything. A component the query does not return does not exist in the
+    /// catalog at all — recorded as zero on hand, which is the truth about a shelf that isn't there.
+    /// </para>
+    /// </summary>
+    private async Task<IReadOnlyList<ShortComponent>> DescribeShortages(
+        IReadOnlyList<ComponentDemand> shortLines,
+        CancellationToken cancellationToken)
+    {
+        var ids = shortLines.Select(line => line.ComponentId).ToList();
+
+        var onHand = await _context.Components
+            .AsNoTracking()
+            .Where(component => ids.Contains(component.ComponentId))
+            .ToDictionaryAsync(component => component.ComponentId, component => component.OnHand, cancellationToken);
+
+        return shortLines
+            .Select(line => new ShortComponent(
+                line.ComponentId,
+                line.Quantity,
+                onHand.TryGetValue(line.ComponentId, out var stock) ? stock : 0))
+            .ToList();
     }
 
     private static bool IsDuplicateReservation(DbUpdateException exception) =>

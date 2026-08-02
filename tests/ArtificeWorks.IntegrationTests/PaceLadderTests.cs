@@ -219,7 +219,7 @@ public class PaceLadderTests : IAsyncLifetime
         JsonSerializer.Serialize(
             new EventEnvelope<WorkOrderScheduled>(
                 Guid.NewGuid(), "work-order.scheduled", 1, correlationId, DateTime.UtcNow,
-                new WorkOrderScheduled(workOrderId, "PRD-PACE", "Paced Automaton", 1, DateTime.UtcNow)),
+                new WorkOrderScheduled(workOrderId, "PRD-PACE", "Paced Automaton", 1, 1, DateTime.UtcNow)),
             new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
     /// <summary>

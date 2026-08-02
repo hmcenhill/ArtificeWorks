@@ -57,17 +57,23 @@ flowchart LR
     pick --> mr(["work-order.<br/>materials-reserved"])
     mr --> prod["production"]
     rr(["work-order.<br/>rework-required"]) --> pick
+    pick -->|"short of a <b>made</b><br/>component (13.3)"| child["child work order<br/>created + Scheduled"]
+    child --> sched
     prod --> pc(["work-order.<br/>production-completed"])
     pc --> insp["inspection"]
     insp -->|"shortfall,<br/>rebuilds left"| rr
     insp -->|"full qty passed"| ip(["work-order.<br/>inspection-passed"])
     insp -->|"cap exceeded"| f(["work-order.faulted"])
-    ip --> ship["shipping"]
+    ip -->|"has a parent"| put["putaway<br/>(credit on_hand)"]
+    ip -->|"no parent"| ship["shipping"]
     ship -->|"carrier accepts"| ss(["work-order.<br/>shipment-scheduled"])
     ship -->|"carrier refuses"| hold["order OnHold<br/>(in Delivery)"]
     hold -.->|"POST /release<br/>republishes"| ip
     ss --> disp["dispatch"]
     disp --> done(["work-order.<br/>completed"])
+    put --> done
+    done -->|"the completed order<br/>has a parent"| rel["release the parent"]
+    rel --> sched
 ```
 
 Note the loop: `rework-required` goes back to **picking**, not to production (13.1). A rebuild draws
@@ -78,11 +84,47 @@ Each subscriber binds the exact routing keys it acts on, so **the outcome is the
 no consumer receives an event and then decides the event wasn't for it. That is the direct
 exchange earning its place.
 
-Two keys have no *pipeline* subscriber, both deliberately. `work-order.faulted` and
-`work-order.completed` are *announcements*: one is a recoverable state a human is expected to act
-on, the other is the terminal "and that's the end of it". Nothing in the pipeline acts on either.
-Since 11.2 they do have **one** reader — the dashboard relay below — which was always their point:
-they were left orphaned through Epics 7–8 so the Epic 11 feed would be their first subscriber.
+One key has no *pipeline* subscriber, deliberately. `work-order.faulted` is an *announcement*: a
+recoverable state a human is expected to act on, which nothing in the pipeline acts on. Since 11.2
+it has **one** reader — the dashboard relay below — which was always its point: it was left orphaned
+through Epics 7–8 so the Epic 11 feed would be its first subscriber. `work-order.completed` was the
+other one until 13.3 gave it a real subscriber; see below.
+
+### Child work orders: the factory making what it hasn't got (13.3)
+
+The one place this epic touches the pipeline's control flow, and it adds **two branches and no new
+routing key** — everything else falls out of a child being an *ordinary* work order.
+
+- **Picking gained a branch.** A pick short of a **bought** part goes OnHold with a reason, exactly
+  as it has since 5.3. A pick short of a component the factory *makes* creates a child work order for
+  the shortfall (demand minus what is on the shelf), advances it to Scheduled, and *then* holds the
+  parent naming what it is waiting for. The child, the hold and the two events announcing the child
+  (`work-order.created` and `work-order.scheduled`) are **one save** — the child is attached to the
+  parent's tracked graph, so there is no moment where a parent is held with nobody building for it.
+- **`inspection-passed` gained a branch.** An order *with a parent* is **stocked, not shipped**: its
+  passed quantity credits `components.on_hand` for the component it was making, it advances Delivery
+  → Completed, and it publishes `work-order.completed` with a null carrier and null tracking number.
+  No shipment row. Booking a fictional carrier to move parts from one end of the factory to the other
+  would be a lie told to avoid one `if`.
+- **`work-order.completed` gained its first pipeline subscriber.** A completed order *with a parent*
+  releases that parent's hold and republishes `work-order.scheduled` for it. Nearly every delivery is
+  a customer's order finishing and costs one indexed read; the alternative — a
+  `sub-assembly-stocked` key saying the same thing to one listener — is a second contract to keep in
+  step with this one.
+
+**The parent's retry is a re-pick, not a resume**, which is why `work-order.scheduled` now carries
+`attemptNumber` and an outstanding `quantity`. There is no new "resume" verb and no partial state to
+reconstruct, because the pick that failed was all-or-nothing and drew nothing. A parent waiting on
+*two* children is released by the first to finish, re-picks, finds the second component still short,
+sees a live child for it and simply holds again — two extra picks buy a loop with no "am I still
+waiting on anyone?" query in it, and one that self-corrects if the world moves underneath it.
+
+**Depth is capped and a cycle is refused.** A bill of materials that reaches itself is an infinite
+child-order generator pointed at a shared world with a rate-limited chaos endpoint and no auth. Each
+order stores its `tree_depth`; an order at `WorkOrder.MaxSubAssemblyDepth` (which *is* 13.2's
+`BomExplosion.MaxDepth` — one constant, so the read side and the write side cannot disagree) routes
+to **Fault** with an honest reason instead of spawning. This is the one place in the epic where
+getting it wrong is not a bad demo but a runaway.
 
 ### `work-order.inspection-passed` has two publishers
 
@@ -128,7 +170,7 @@ so whichever service starts first declares it; the declaration is idempotent.
 
 | Queue | Durable | Bound to | Consumer |
 | --- | --- | --- | --- |
-| `artifice.workers` | yes | `artifice.events`, one binding per handled event type — `work-order.scheduled`, `work-order.materials-reserved`, `work-order.production-completed`, `work-order.rework-required`, `work-order.inspection-passed`, `work-order.shipment-scheduled` | `ArtificeWorks.Workers` |
+| `artifice.workers` | yes | `artifice.events`, one binding per handled event type — `work-order.scheduled`, `work-order.materials-reserved`, `work-order.production-completed`, `work-order.rework-required`, `work-order.inspection-passed`, `work-order.shipment-scheduled`, **`work-order.completed`** (13.3) | `ArtificeWorks.Workers` |
 | `artifice.retry.5s.queue` | yes | `artifice.retry.5s` (fanout) | *(none — TTL 5s, then dead-letters to `artifice.events`)* |
 | `artifice.retry.30s.queue` | yes | `artifice.retry.30s` (fanout) | *(none — TTL 30s)* |
 | `artifice.retry.2m.queue` | yes | `artifice.retry.2m` (fanout) | *(none — TTL 2m)* |
@@ -144,9 +186,9 @@ so whichever service starts first declares it; the declaration is idempotent.
 | `work-order.materials-reserved` | worker (picking) | production | Build the attempt the payload names |
 | `work-order.production-completed` | worker (production) | inspection | Judge the units this attempt built |
 | `work-order.rework-required` | worker (inspection) | **picking** | Draw parts for the shortfall as attempt N+1 |
-| `work-order.inspection-passed` | worker (inspection) **and API (on release, 7.3)** | shipping | Full ordered quantity passed; book a carrier |
+| `work-order.inspection-passed` | worker (inspection) **and API (on release, 7.3)** | shipping — or **putaway**, for an order with a parent (13.3) | Full ordered quantity passed; book a carrier, or credit the shelf |
 | `work-order.shipment-scheduled` | worker (shipping) | dispatch | A carrier accepted; hand the parcel over |
-| `work-order.completed` | worker (dispatch) | **dashboard relay** (11.2) | Parcel dispatched, order closed — the last event in the chain |
+| `work-order.completed` | worker (dispatch) **and worker (putaway, 13.3)** | **the parent-release handler** (13.3) + dashboard relay (11.2) | Parcel dispatched or stock put away, order closed — the last event in the chain |
 | `work-order.faulted` | worker (inspection) | **dashboard relay** (11.2) | Rebuild cap exceeded; the cycle has stopped |
 
 The worker owns a single durable queue. On startup it declares the queue and then binds it
@@ -194,6 +236,12 @@ Only genuine faults leave the happy path. **Business outcomes ack**, because the
 | shipping | Duplicate delivery → order already booked | **ack** |
 | dispatch | Parcel handed over, order Completed | ack |
 | dispatch | Duplicate delivery → shipment already dispatched | **ack** |
+| picking | **Short of a made component → child order scheduled, parent OnHold** (13.3) | **ack** — the factory has decided to make the part; that is a result |
+| picking | Sub-assembly chain past the depth cap → order **Faulted** | **ack** — a bounded, deliberate stop, exactly as the rebuild cap is |
+| picking | Concurrent delivery lost the sub-assembly index (or the parent's `xmin`) | **retry ladder** — a write race is transient, and the redelivery finds the request already open |
+| putaway | Stock credited, sub-assembly order Completed | ack |
+| putaway | Duplicate delivery → already stocked away | **ack** |
+| release | Completed order has no parent, or the parent is not held | **ack** — the common case, and the branch every sibling but the last takes |
 | any | Unexpected exception (broker/database fault, bug, concurrency conflict) | **retry ladder**, then park |
 | any | Body won't deserialize, or no handler for the routing key | **park immediately** |
 
@@ -507,11 +555,27 @@ What must happen exactly once is an **attempt**. So the key is attempt-scoped:
 | `inspection_runs` | `(work_order_id, attempt_number)` | one inspection per attempt |
 | `shipments` | `work_order_id` | one parcel per order |
 | `idempotency_keys` | `key` | one work order per client request (8.4) |
+| `work_orders` | `(parent_work_order_id, parent_attempt_number, for_component_id)`, **filtered to unfinished orders** | one *outstanding* sub-assembly request per parent attempt and component (13.3) |
 
-**One rule, five keys.** *The key follows the thing that must happen once.* 5.4 said the order,
-6.4 said the attempt, 7.1 said the order again, and 8.4 says the client's request. That is the
-reliability argument this system is making, and it is why at-least-once publishing is safe here
-and would not be somewhere else.
+**One rule, six keys.** *The key follows the thing that must happen once.* 5.4 said the order,
+6.4 said the attempt, 7.1 said the order again, 8.4 says the client's request, and 13.3 says the
+request-for-a-part. That is the reliability argument this system is making, and it is why
+at-least-once publishing is safe here and would not be somewhere else.
+
+**13.3's is the first *filtered* one, and the filter is the interesting part.** An absolute key on
+`(parent, attempt, component)` would refuse a redelivery — which is what is wanted — but it would
+also refuse a parent that legitimately needs to ask again: its child finished, another order drew
+the stock before the parent re-picked, and it is short of the same component on the same attempt.
+Under an absolute key that parent waits forever with nothing coming. Scoping the index to orders
+that are not yet Completed or Cancelled says exactly what is meant — *at most one live request* —
+and lets the system self-correct. The cost is a unique index on a mutable column, which is
+unusual enough to be worth stating out loud.
+
+**Putaway needs no key at all**, for the same reason dispatch doesn't. The child's own Delivery →
+Completed transition refuses a second hand-over, and it commits in the same transaction as the stock
+credit — so a redelivered `inspection-passed` finds a Completed order and the shelf does not rise
+twice. A genuine race is settled by the work order's `xmin` token: the loser's save throws, its
+credit rolls back with it, and its redelivery takes the duplicate path.
 
 **13.1 moved picking from the first group to the second, and that is the rule working, not bending.**
 Once a rebuild draws its own parts, the thing that must happen once is the pick *for an attempt*, so

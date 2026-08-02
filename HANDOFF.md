@@ -7,7 +7,7 @@
 > permanent, move it to [docs/architecture.md](docs/architecture.md) (the settled invariants) or the
 > relevant epic file, and drop it from here. Commit this file with the work it describes.
 
-**Last updated:** 2026-07-31 (**13.2 implemented, and 13.1 verified.** A component can now be *made* — one nullable `Component.MakeProductId` turns the flat BOM into a tree — with a recursive `BomExplosion`, a three-level seeded catalog, and `GET /products/{id}/bom`. **Docker was up: the whole suite ran, 192 unit + 157 integration green**, which also closed out 13.1's unverified integration tests. One 13.1 test defect found and fixed — see the log.)
+**Last updated:** 2026-07-31 (**13.3 implemented — the epic's headline.** Work now begets work: a pick short of a *made* component schedules a child work order for the shortfall, the parent waits OnHold, the child runs the ordinary pipeline and is **stocked rather than shipped**, and its `work-order.completed` releases the parent to re-pick. Docker was up throughout; 209 unit green and the new 8 sub-assembly integration tests green. See the log for the five decisions taken.)
 
 ## Current state
 
@@ -29,27 +29,27 @@ Finished epics (detail in each epic file, git history, and architecture.md):
 - **Epic 11 — demo dashboard** (M5): the `web/` SPA (Vite + React + TS, outside the `.sln`, Vite-proxied → no CORS) — board + timeline, SignalR realtime via a read-only `DashboardRelay` → `/hubs/dashboard`, visitor affordances driving the ordinary endpoints, and the animated `/architecture` diagram. **Two load-bearing frontend gotchas:** the list DTO's enum-**name** converter is *confined to that DTO* (widening it breaks existing numeric-read tests) — which is why `client.ts` decodes the full `WorkOrderDto`'s numeric enums by hand; carriers are mirrored in `web/src/domain/carriers.ts` (no carriers endpoint).
 - **Epic 12 — failure injection** (M6): visitor-armed chaos → Epic 8's real recovery, on demand. `injected_faults` registry + rate-limited `POST /system/chaos`; three levers (`FailInspection` → rework/Fault loop; `TransientOnce`/`Poison` → picking-stage throws over 8.2's ladder / parked queue), each firing once with the disarm committed outside the rolled-back stage txn. Frontend: the order detail's `ChaosPanel` and the dead-letter inspector at `/dead-letters`.
 
-**Current epic — 13, deep domain** (M6, groomed 2026-07-31): [EPIC_13.md](docs/Plan/EPIC%2013%20-%20Deep%20domain%20-%20multi-level%20BOMs%20and%20routings/EPIC_13.md) → **13.1 materials per attempt (done, verified)** · **13.2 multi-level BOM model + explosion (done, verified)** · 13.3 child work orders · 13.4 shared-platform view · 13.5 routings (last, droppable). See the log entries below for the decisions taken at grooming, 13.1 and 13.2.
+**Current epic — 13, deep domain** (M6, groomed 2026-07-31): [EPIC_13.md](docs/Plan/EPIC%2013%20-%20Deep%20domain%20-%20multi-level%20BOMs%20and%20routings/EPIC_13.md) → **13.1 materials per attempt (done, verified)** · **13.2 multi-level BOM model + explosion (done, verified)** · **13.3 child work orders (done, verified)** · 13.4 shared-platform view · 13.5 routings (last, droppable). See the log entries below for the decisions taken at grooming and in each story.
 
 ## Next up
 
-1. **13.3 — child work orders**, the epic's headline. Grooming batched 13.2+13.3 as one run; 13.2 was
-   taken on its own instead, which paid off as intended — the model, the tree and the deeper catalog
-   are in and green, so 13.3 is about *one* new decision rather than a new model and a new decision
-   at once: a missing made component spawns a child order, which is stocked rather than shipped,
-   and the parent waits OnHold until the child's `work-order.completed` releases it. Take the grooming
-   plan's `Explore` sweep first ("how does an order reach `Completed`, and what would have to be true
-   for a *second* order to be created from inside a worker handler?"). Note 13.2 left the spawn
-   *unexercised on purpose*: every made component carries seeded stock, so nothing is short yet — the
-   first thing 13.3 needs is a way to make one short.
-2. Then 13.4 alone (the check-in point), 13.5 alone and last.
-3. **Bring the whole stack up and watch it live** — still not done, now covering three epics. Docker +
-   a migrated DB, then the API (5181), the worker, `src/ArtificeWorks.Simulation`, `cd web && npm run
-   dev`. Watch for: the board moving with nobody driving; `/architecture` pulsing off the same stream
-   (11.4's one unseen part); Epic 12's loop end to end (arm `Poison` → park → replay → complete); a
-   rebuilt order showing **two** "materials picked" lines on its timeline; and the create form still
-   offering exactly **three** templates now the catalog holds six products. ~30 min.
-4. **Verify the telemetry against a live stack.** Asserted at the *shape* level only — the runbook's
+1. **Bring the whole stack up and watch it live.** This has been deferred for three epics and 13.3
+   is the one that makes it genuinely necessary rather than merely nice: the child-order loop is the
+   best thing this epic produces and it has only ever been seen in tests. Docker + a migrated DB,
+   then the API (5181), the worker, `src/ArtificeWorks.Simulation`, `cd web && npm run dev`. Watch
+   for, in priority order:
+   - **The board deepening.** Let the simulation run until `CMP-CTRL-STACK` (seeded at 24) drains —
+     roughly eight generated orders. A second card appears with a dashed edge and a "sub-assembly"
+     badge, runs its own stages, disappears into stock, and the parent resumes. **If it never
+     happens, the lever is `CatalogSeeder`'s three thin numbers, not the design** (see the open
+     decision below).
+   - The parent/child links on both detail pages, and a child's timeline showing no shipment.
+   - Then the older unseen things: the board moving with nobody driving, `/architecture` pulsing off
+     the same stream (11.4's one unseen part), Epic 12's loop end to end (arm `Poison` → park →
+     replay → complete), a rebuilt order showing **two** "materials picked" lines, and the create
+     form still offering exactly **three** templates from a six-product catalog. ~45 min.
+2. Then **13.4 alone** (the check-in point), **13.5 alone and last**.
+3. **Verify the telemetry against a live stack.** Asserted at the *shape* level only — the runbook's
    LogQL/PromQL has never run against real Loki/Prometheus, and field naming after OTLP ingest is
    where reality likely differs. ~30 min with the stack up.
 
@@ -61,17 +61,23 @@ is currently blocked on an undecided question. The few deliberate deferrals stil
 - **Admin auth gate** — `SetStatus` has no endpoint; `/system/*` (dead letters, stats, simulation,
   chaos) is unauthenticated behind that one path prefix until the gate exists. `/system/chaos` has a
   rate limiter (fixed window, 5 per 10s, keyed by caller IP) as an interim guardrail.
-- **`work-order.faulted` / `work-order.completed`** now have exactly one subscriber, the 11.2
-  dashboard relay (no *pipeline* consumer, still by design).
+- **`work-order.faulted`** still has exactly one subscriber, the 11.2 dashboard relay (no *pipeline*
+  consumer, by design). **`work-order.completed` no longer does** — 13.3 gave it its first pipeline
+  subscriber, the handler that releases a parent when its child finishes. Nearly every delivery is a
+  customer's order finishing and costs one indexed read; the alternative was a second event type
+  saying the same thing to one listener.
 - **Dashboard relay is single-instance** — one fixed-name `artifice.dashboard` queue. A scaled API
   would give each instance its own queue + a SignalR backplane (an Epic 15 concern).
-- **The shelves now drain faster, and the seed data was deliberately not touched** (13.1). Every
-  rebuild is a real draw; the binding constraint is the Delver line (`CMP-SENS-SEISMIC` 120 at 2/unit
-  → 60 units, `CMP-LOCO-LEG` 90 at 1/unit). 10.4's sweep still restocks to `seed_on_hand`, so the
-  world heals. **If the live demo starves, the fix is `CatalogSeeder`'s numbers, not the design** —
-  raised then, as a visible decision, rather than pre-emptively. 13.2 did *not* change the drain: the
-  eight new components sit under sub-assemblies nothing consumes until 13.3, and the two made
-  components keep the on-hand they always had.
+- **The shelves drain faster, and 13.3 finally changed the seed data on purpose.** Every rebuild is a
+  real draw (13.1); the binding bought constraint is still the Delver line (`CMP-SENS-SEISMIC` 120 at
+  2/unit → 60 units, `CMP-LOCO-LEG` 90 at 1/unit). **13.3 cut the two made components to 24
+  (`CMP-CTRL-STACK`, `CMP-CORE-AETHER`) and the nested one to 12 (`CMP-CASING-CORE`)** — the story's
+  own note said the honest lever for a hard-to-demo showpiece is a low seed level rather than a
+  chaos button, and stocked like bought parts a child order would essentially never appear. ~24 is
+  eight generated orders. 10.4's sweep restocks to `seed_on_hand`, so the world still heals.
+  **These three numbers are the demo's pacing dial** and are commented as such in `CatalogSeeder`:
+  raise them if the board fills with sub-assemblies, lower them if the showpiece never shows. Judge
+  it against a running stack (next-up #1), not from the test suite.
 - **Sub-assemblies are ordinary products, so `GET /products` now returns six rows.** They carry
   `isSubAssembly` and the create form filters on it, which is the only frontend change in 13.2. The
   alternative — hiding them from the catalog — would have made 13.4 unable to show what a shared
@@ -81,10 +87,13 @@ is currently blocked on an undecided question. The few deliberate deferrals stil
 
 ## User to-dos (not Claude's)
 
-- Recreate local DB: `docker compose down -v && docker compose up -d`, then EF update. Two migrations
-  are pending on any existing local DB — `AttemptScopedReservations` (13.1; the old unique index on
-  `material_reservations.WorkOrderId` must go before a rebuild can pick) and `ManufacturedComponents`
-  (13.2). Both ran clean against fresh Testcontainers Postgres.
+- Recreate local DB: `docker compose down -v && docker compose up -d`, then EF update. **Three**
+  migrations are pending on any existing local DB — `AttemptScopedReservations` (13.1; the old unique
+  index on `material_reservations.WorkOrderId` must go before a rebuild can pick),
+  `ManufacturedComponents` (13.2) and `SubAssemblyWorkOrders` (13.3). All three ran clean against
+  fresh Testcontainers Postgres. **A recreate is worth preferring over an update here**: 13.3's seed
+  levels only apply to components the seeder is creating for the first time, so an existing database
+  keeps the old `CMP-CTRL-STACK` 300 and the child-order loop will not fire in a demo.
 - Rename GitHub repo + local folder to match ArtificeWorks (deferred by choice).
 - Push commits when ready.
 
@@ -92,6 +101,26 @@ is currently blocked on an undecided question. The few deliberate deferrals stil
 
 One line per entry; full detail is in each epic file and the git commit.
 
+- **2026-07-31** — **13.3 implemented: work begets work.** A pick short of a *made* component
+  schedules a child work order for the **shortfall** (demand − on-hand), holds the parent naming what
+  it waits for, and the child's `work-order.completed` releases it to re-pick. **The child, the hold
+  and both announcing events are one save** — `WorkOrder.ForSubAssembly` attaches the child to the
+  parent's tracked `Children` collection, so the existing `Update` commits the lot and **no new
+  repository write method was needed**. The first version had a `TryAddChildren` that caught the
+  unique violation and detached the losers; the concurrency test proved that theatre (the winner's
+  hold has already moved the parent's `xmin`, so the loser cannot cleanly commit anything) and 35
+  lines came back out — a losing duplicate throws, 8.2 calls it transient, the redelivery is clean.
+  **The dedupe index is filtered to *live* children**, which is the story's hardest call: an absolute
+  `(parent, attempt, component)` key would also refuse a parent that legitimately needs to ask again
+  and strand it forever. **Four other contract changes:** `WorkOrderScheduled` gained `AttemptNumber`
+  and its `Quantity` now means *outstanding* (the release path needs both, and 6.4 forbids re-reading
+  state); `WorkOrderCompleted`'s carrier/tracking went nullable plus a `ForComponentId` (a stocked
+  child has no parcel); `work-order.completed` gained its **first pipeline subscriber**; and `tree_depth`
+  is a stored column sharing 13.2's `MaxDepth`, so read-side and write-side caps are one number. The
+  world sweep now retires a tree **whole or not at all** (`NOT EXISTS` + a `NO ACTION` self-FK saying
+  the same thing from two directions). **Finding for Epic 14:** the two broker end-to-end test hosts
+  hand-mirror the worker's DI registrations, so adding a dependency to a handler silently stalled
+  five tests — that duplication is a standing trap.
 - **2026-07-31** — **13.2 implemented: a component the factory makes.** `components.make_product_id`
   (nullable FK → `products.ItemId`, migration `ManufacturedComponents`, `Restrict` on delete so
   removing a sub-assembly product cannot silently take the component and every `bom_lines` row that

@@ -7,11 +7,25 @@ import { OriginBadge } from "./OriginBadge";
 /** One order as a board card. A card is a link to that order's timeline. */
 export function OrderCard({ order, now }: { order: WorkOrderListItem; now: number }) {
   return (
-    <Link to={`/orders/${order.id}`} className="order-card" data-origin={order.origin}>
+    <Link
+      to={`/orders/${order.id}`}
+      className="order-card"
+      data-origin={order.origin}
+      data-sub-assembly={order.isSubAssembly || undefined}
+    >
       <div className="order-card-top">
         <span className="order-card-product">{order.productName}</span>
         <OriginBadge origin={order.origin} />
       </div>
+      {/* 13.3. A child inherits its parent's origin — the demand really is the parent's — so the
+          origin badge above cannot distinguish it and the board needs a mark of its own. Without
+          one, a spawned child is indistinguishable from a customer's order, and the board visibly
+          deepening is the whole point of the story. */}
+      {order.isSubAssembly && (
+        <span className="sub-assembly-badge" title="Building a part for another order">
+          ⛓ sub-assembly
+        </span>
+      )}
       <div className="order-card-meta">
         <code className="order-card-id" title={order.id}>
           {order.id.slice(0, 8)}

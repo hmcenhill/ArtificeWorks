@@ -36,6 +36,11 @@ builder.Services.AddScoped<IMaterialReservationRepository, MaterialReservationRe
 // The material-picking workflow (Epic 5) — the worker's real work.
 builder.Services.AddScoped<MaterialPickingService>();
 
+// 13.3's sub-assembly loop: spawn a child order for a short manufactured component, put a finished
+// child's units away as stock, release the parent. Registered before picking runs because the pick
+// is where the spawn happens.
+builder.Services.AddSubAssemblies();
+
 // The factory's live dials (10.2). Registered here and not only in the API for the reason the
 // story exists: a PUT handled by the API changes nothing about what the worker does, and the
 // worker is where inspections actually fail. It also brings 10.1's pace policy, which the
@@ -78,10 +83,16 @@ builder.Services.AddEventHandler<MaterialsReserved, MaterialsReservedHandler>();
 builder.Services.AddEventHandler<ProductionCompleted, ProductionCompletedHandler>();
 builder.Services.AddEventHandler<ReworkRequired, ReworkRequiredHandler>();
 
-// Epic 7. inspection-passed → book a carrier; shipment-scheduled → dispatch and complete.
-// work-order.completed is the terminal announcement and binds to nobody.
+// Epic 7. inspection-passed → book a carrier (or, since 13.3, put a sub-assembly order's units away
+// as stock); shipment-scheduled → dispatch and complete.
 builder.Services.AddEventHandler<InspectionPassed, InspectionPassedHandler>();
 builder.Services.AddEventHandler<ShipmentScheduled, ShipmentScheduledHandler>();
+
+// 13.3. work-order.completed gets its first pipeline subscriber — it was the terminal announcement
+// binding to nobody through Epics 7–8, and read only by the dashboard relay since 11.2. A child
+// order completing is what releases the parent that was waiting for it, which makes the gate
+// event-driven instead of a poll. Registering this handler is also what adds the queue binding.
+builder.Services.AddEventHandler<WorkOrderCompleted, WorkOrderCompletedHandler>();
 
 // Health (9.4). The worker had no health signal at all, and it is the half more likely to be
 // wedged — a consumer that has quietly stopped consuming is silent, which is the failure mode this

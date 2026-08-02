@@ -26,6 +26,12 @@ export interface WorkOrderListItem {
   origin: WorkOrderOrigin;
   createdUtc: string;
   updatedUtc: string;
+  /**
+   * 13.3: this order is building a part for another order. A flag rather than the parent id,
+   * because the board only draws a badge — but it needs one, since a child inherits its parent's
+   * `origin` and the origin filter therefore cannot tell them apart.
+   */
+  isSubAssembly: boolean;
 }
 
 /** Mirrors Application.Data.TimelineKind — the stable entry kinds a client switches on. */
@@ -109,6 +115,26 @@ export interface WorkOrder {
   buildAttempt: number;
   units: StockUnit[];
   shipment: Shipment | null;
+  /** 13.3: the order this one is making a part for. Null for a top-level order. */
+  parentWorkOrderId: string | null;
+  /** The component a child order's finished units are credited to. Null for a top-level order. */
+  forComponentId: string | null;
+  /** The sub-assembly orders spawned for this one — usually empty. */
+  children: SubAssemblyChild[];
+  /** How many of `children` are still running: what this order is waiting on. */
+  liveChildCount: number;
+}
+
+/**
+ * Mirrors Application.Data.SubAssemblyChildDto — one child order as its parent sees it. `status` is
+ * the name shape; the wire carries a number (see client.ts adapter), like everything on WorkOrderDto.
+ */
+export interface SubAssemblyChild {
+  id: string;
+  status: WorkOrderStatus;
+  forComponentId: string | null;
+  qty: number;
+  isLive: boolean;
 }
 
 /**

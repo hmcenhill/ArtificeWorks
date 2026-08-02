@@ -23,6 +23,7 @@ public class EventContractTests
             ProductId: "CUSTODIAN-STD",
             ProductName: "Custodian",
             Quantity: 3,
+            AttemptNumber: 1,
             ScheduledUtc: new DateTime(2026, 7, 18, 12, 0, 0, DateTimeKind.Utc));
 
         var envelope = new EventEnvelope<WorkOrderScheduled>(
@@ -190,7 +191,7 @@ public class EventContractTests
     {
         // Guards against an accidental rename/version bump of the wire contract.
         Assert.Equal("work-order.created", new WorkOrderCreated(Guid.NewGuid(), "p", "P", 1, "r", DateTime.UtcNow).EventType);
-        Assert.Equal("work-order.scheduled", new WorkOrderScheduled(Guid.NewGuid(), "p", "P", 1, DateTime.UtcNow).EventType);
+        Assert.Equal("work-order.scheduled", new WorkOrderScheduled(Guid.NewGuid(), "p", "P", 1, 1, DateTime.UtcNow).EventType);
         Assert.Equal("work-order.materials-reserved", new MaterialsReserved(Guid.NewGuid(), "p", 1, 1, [], DateTime.UtcNow).EventType);
         Assert.Equal("work-order.production-completed", new ProductionCompleted(Guid.NewGuid(), "p", [], 1, DateTime.UtcNow).EventType);
         Assert.Equal("work-order.rework-required", new ReworkRequired(Guid.NewGuid(), "p", [], 1, 1, DateTime.UtcNow).EventType);
@@ -200,7 +201,7 @@ public class EventContractTests
             new ShipmentScheduled(Guid.NewGuid(), "p", "c", "t", [], DateTime.UtcNow, DateTime.UtcNow).EventType);
         Assert.Equal("work-order.completed",
             new WorkOrderCompleted(Guid.NewGuid(), "p", "c", "t", [], DateTime.UtcNow).EventType);
-        Assert.Equal(1, new WorkOrderScheduled(Guid.NewGuid(), "p", "P", 1, DateTime.UtcNow).SchemaVersion);
+        Assert.Equal(1, new WorkOrderScheduled(Guid.NewGuid(), "p", "P", 1, 1, DateTime.UtcNow).SchemaVersion);
     }
 
     /// <summary>
@@ -240,7 +241,7 @@ public class EventContractTests
     [Fact]
     public void Envelope_metadata_is_self_describing_in_the_json()
     {
-        var payload = new WorkOrderScheduled(Guid.NewGuid(), "p", "P", 1, DateTime.UtcNow);
+        var payload = new WorkOrderScheduled(Guid.NewGuid(), "p", "P", 1, 1, DateTime.UtcNow);
         var envelope = new EventEnvelope<WorkOrderScheduled>(
             Guid.NewGuid(), payload.EventType, payload.SchemaVersion, Guid.NewGuid(), DateTime.UtcNow, payload);
 

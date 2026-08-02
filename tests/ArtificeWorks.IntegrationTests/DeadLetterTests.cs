@@ -303,7 +303,7 @@ public class DeadLetterTests : IAsyncLifetime
         scope.ServiceProvider.GetRequiredService<CorrelationContext>().CorrelationId = Guid.NewGuid();
 
         await scope.ServiceProvider.GetRequiredService<IEventPublisher>().PublishAsync(
-            new WorkOrderScheduled(workOrderId, product.ItemId, product.ItemName, 1, DateTime.UtcNow));
+            new WorkOrderScheduled(workOrderId, product.ItemId, product.ItemName, 1, 1, DateTime.UtcNow));
 
         await scope.ServiceProvider.GetRequiredService<ArtificeWorksDbContext>().SaveChangesAsync();
     }

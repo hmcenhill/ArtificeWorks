@@ -99,6 +99,11 @@ public class InjectedFaultTests : IAsyncLifetime
         builder.Services.AddProductionAndInspection(builder.Configuration);
         builder.Services.AddShipping(builder.Configuration);
 
+        // 13.3's sub-assembly loop. Registered here for the same reason everything above it is:
+        // this host mirrors the worker's own registrations, and InspectionPassedHandler now asks
+        // "is this order internal?" before it reaches for a carrier.
+        builder.Services.AddSubAssemblies();
+
         builder.Services.AddRabbitMqMessaging(builder.Configuration);
         builder.Services.AddOutboxDispatcher();
         builder.Services.AddDeadLetters();
@@ -110,6 +115,7 @@ public class InjectedFaultTests : IAsyncLifetime
         builder.Services.AddEventHandler<ReworkRequired, ReworkRequiredHandler>();
         builder.Services.AddEventHandler<InspectionPassed, InspectionPassedHandler>();
         builder.Services.AddEventHandler<ShipmentScheduled, ShipmentScheduledHandler>();
+        builder.Services.AddEventHandler<WorkOrderCompleted, WorkOrderCompletedHandler>();
 
         // The parked-queue drain turns a poison park into a dead_letters row (8.3) — the durable
         // evidence the poison test replays.
@@ -308,7 +314,7 @@ public class InjectedFaultTests : IAsyncLifetime
         scope.ServiceProvider.GetRequiredService<CorrelationContext>().CorrelationId = Guid.NewGuid();
 
         await scope.ServiceProvider.GetRequiredService<IEventPublisher>().PublishAsync(
-            new WorkOrderScheduled(workOrderId, product.ItemId, product.ItemName, 1, DateTime.UtcNow));
+            new WorkOrderScheduled(workOrderId, product.ItemId, product.ItemName, 1, 1, DateTime.UtcNow));
 
         await scope.ServiceProvider.GetRequiredService<ArtificeWorksDbContext>().SaveChangesAsync();
     }

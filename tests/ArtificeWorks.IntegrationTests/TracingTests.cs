@@ -53,7 +53,7 @@ public class TracingTests : IClassFixture<OutboxFixture>
             var context = scope.ServiceProvider.GetRequiredService<ArtificeWorksDbContext>();
 
             await publisher.PublishAsync(new WorkOrderScheduled(
-                Guid.NewGuid(), "PRD-TRACE", "Traced Automaton", 1, DateTime.UtcNow));
+                Guid.NewGuid(), "PRD-TRACE", "Traced Automaton", 1, 1, DateTime.UtcNow));
             await context.SaveChangesAsync();
         }
 
@@ -94,7 +94,7 @@ public class TracingTests : IClassFixture<OutboxFixture>
             var context = scope.ServiceProvider.GetRequiredService<ArtificeWorksDbContext>();
 
             await publisher.PublishAsync(new WorkOrderScheduled(
-                eventId, "PRD-UNTRACED", "Untraced Automaton", 1, DateTime.UtcNow));
+                eventId, "PRD-UNTRACED", "Untraced Automaton", 1, 1, DateTime.UtcNow));
             await context.SaveChangesAsync();
         }
 

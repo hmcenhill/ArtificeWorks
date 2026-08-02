@@ -20,6 +20,66 @@ public class WorkOrder
     /// </summary>
     public WorkOrderOrigin Origin { get; }
 
+    // ------------------------------------------------------------------ 13.3: the parent link
+
+    /// <summary>
+    /// The order this one is making a sub-assembly for, or <c>null</c> for a top-level order.
+    /// <para>
+    /// <strong>A child is an ordinary work order.</strong> There is no <c>SubAssemblyOrder</c> type,
+    /// no second table and no parallel state machine — everything the pipeline, the board, the
+    /// timeline, the metrics and the chaos panel do for an order they do for a child for free. These
+    /// four properties are the whole of the difference, and three of them are nullable.
+    /// </para>
+    /// </summary>
+    public Guid? ParentWorkOrderId { get; private init; }
+
+    /// <summary>
+    /// The component this child's output is credited to when it passes inspection (13.3's putaway),
+    /// or <c>null</c> for a top-level order. One unit built credits one unit of stock.
+    /// </summary>
+    public string? ForComponentId { get; private init; }
+
+    /// <summary>
+    /// Which of the parent's pick attempts asked for this sub-assembly. Part of the dedupe key —
+    /// a redelivered scheduling event must not spawn a second child for the same (parent, attempt,
+    /// component) — and the reason a genuine rebuild that goes short again may ask afresh.
+    /// </summary>
+    public int? ParentAttemptNumber { get; private init; }
+
+    /// <summary>
+    /// How far below a top-level order this one sits: 0 for an order a customer placed, 1 for its
+    /// sub-assembly, 2 for that sub-assembly's own sub-assembly.
+    /// <para>
+    /// <strong>Stored rather than derived, and it is the runaway guard.</strong> A cyclic or absurdly
+    /// deep catalog is an infinite child-order generator pointed at a shared world with no auth;
+    /// <see cref="BomExplosion"/>'s cap protects the read side, but picking never explodes, so the
+    /// write side needs a counter of its own. Walking the parent chain per pick would answer the same
+    /// question with a recursive query on the pipeline's hot path.
+    /// </para>
+    /// </summary>
+    public int TreeDepth { get; private init; }
+
+    /// <summary>
+    /// The sub-assembly orders spawned for this one. Loaded by the repository on the read paths the
+    /// completion guard runs on, and usually empty — the overwhelming majority of orders have no
+    /// children at all.
+    /// </summary>
+    public IReadOnlyList<WorkOrder> Children => _children.AsReadOnly();
+    private readonly List<WorkOrder> _children = new();
+
+    /// <summary>True when this order exists to build a component for another order.</summary>
+    public bool IsSubAssemblyOrder => ParentWorkOrderId is not null;
+
+    /// <summary>
+    /// True once the order is finished for good — Completed or Cancelled. Fault is deliberately
+    /// excluded, matching <c>_terminalStatuses</c>: a faulted order is stuck, not done, and a parent
+    /// must not sail past a child that gave up without anyone noticing.
+    /// </summary>
+    public bool IsTerminal => _terminalStatuses.Contains(CurrentStatus);
+
+    /// <summary>Children that have not yet finished — the count the parent is waiting on.</summary>
+    public int LiveChildCount => _children.Count(child => !child.IsTerminal);
+
     /// <summary>
     /// The serialized units built for this order, across every attempt — including the ones
     /// that were scrapped. Nothing is ever removed: the collection is the record of what this
@@ -73,6 +133,14 @@ public class WorkOrder
             WorkOrderStatus.Cancelled
         };
 
+    /// <summary>
+    /// How deep a chain of sub-assembly orders may run before the factory refuses to spawn another
+    /// and faults the order instead. Shares <see cref="BomExplosion.MaxDepth"/> deliberately: the
+    /// read side's cap and the write side's cap are answering the same question about the same
+    /// catalog, and two numbers that must agree should be one number.
+    /// </summary>
+    public const int MaxSubAssemblyDepth = BomExplosion.MaxDepth;
+
     private WorkOrder() { }
 
     /// <param name="origin">
@@ -105,6 +173,64 @@ public class WorkOrder
         };
     }
 
+    /// <summary>
+    /// Creates the child work order that builds <paramref name="forComponentId"/> for
+    /// <paramref name="parent"/> (13.3). The one constructor a child can be built through, so it
+    /// cannot exist without all three parts of its link — and so the <em>domain</em> decides that a
+    /// child inherits its parent's <see cref="Origin"/> rather than a caller choosing.
+    /// <para>
+    /// <strong>Origin is inherited, not a third value.</strong> The demand really is the parent's: a
+    /// visitor who orders a Courier has caused every unit of work beneath it. Splitting a third value
+    /// out of a two-valued metric dimension to say "the factory asked itself" would make every
+    /// origin-split panel wrong in a new way. Children are told apart by their parent link.
+    /// </para>
+    /// </summary>
+    /// <param name="subAssemblyProduct">The product that manufactures the component — its maker.</param>
+    /// <param name="qty">The shortfall to build: the parent's demand minus what is on the shelf.</param>
+    /// <param name="parentAttemptNumber">The parent pick attempt that came up short.</param>
+    /// <exception cref="InvalidOperationException">
+    /// The chain is already <see cref="MaxSubAssemblyDepth"/> deep. Callers are expected to check
+    /// <see cref="CanSpawnSubAssembly"/> and fault the order with an honest reason instead; this is
+    /// the backstop, because an unchecked spawn here is a runaway rather than a bad demo.
+    /// </exception>
+    public static WorkOrder ForSubAssembly(
+        WorkOrder parent,
+        Product subAssemblyProduct,
+        string forComponentId,
+        uint qty,
+        int parentAttemptNumber,
+        string createdBy,
+        string? notes = null)
+    {
+        ArgumentNullException.ThrowIfNull(parent);
+        ArgumentNullException.ThrowIfNull(subAssemblyProduct);
+
+        if (string.IsNullOrWhiteSpace(forComponentId))
+        {
+            throw new ArgumentException("A sub-assembly order must name the component it makes.", nameof(forComponentId));
+        }
+        if (!parent.CanSpawnSubAssembly)
+        {
+            throw new InvalidOperationException(
+                $"Work order {parent.Id} is already {parent.TreeDepth} level(s) deep; a sub-assembly order "
+                + $"beneath it would exceed the {MaxSubAssemblyDepth}-level limit.");
+        }
+
+        var child = new WorkOrder(createdBy, subAssemblyProduct, qty, notes, parent.Origin)
+        {
+            ParentWorkOrderId = parent.Id,
+            ForComponentId = forComponentId,
+            ParentAttemptNumber = parentAttemptNumber,
+            TreeDepth = parent.TreeDepth + 1,
+        };
+
+        parent._children.Add(child);
+        return child;
+    }
+
+    /// <summary>True when a sub-assembly order may still be spawned beneath this one.</summary>
+    public bool CanSpawnSubAssembly => TreeDepth + 1 <= MaxSubAssemblyDepth;
+
     public void SetStatus(WorkOrderStatus newStatus, string createdBy, string? notes = null) // Superuser command
     {
         PreviousStatus = CurrentStatus;
@@ -124,8 +250,24 @@ public class WorkOrder
             return TransitionResult.Rejected(TransitionErrorCode.MustReleaseFirst,
                 $"Work order cannot be advanced while it is {CurrentStatus}. Release it first.");
         }
+
+        var next = GetNextStatus(CurrentStatus);
+
+        // 13.3. A parent must not ship or complete while sub-assemblies are still being built for
+        // it. In practice this never fires: a parent short of a made component is held at *picking*,
+        // three stages earlier, so it cannot reach Inspection with a live child in the first place.
+        // That is the argument for stating it here anyway — the acceptance criterion is proved by
+        // the domain rather than implied by the pipeline's shape, and it is the guard that catches
+        // the bug the pipeline did not foresee.
+        if (next is WorkOrderStatus.Delivery or WorkOrderStatus.Completed && LiveChildCount > 0)
+        {
+            return TransitionResult.Rejected(TransitionErrorCode.ChildrenOutstanding,
+                $"Work order has {LiveChildCount} sub-assembly order(s) still in progress and cannot "
+                + $"advance to {next} until they finish.");
+        }
+
         PreviousStatus = CurrentStatus;
-        CurrentStatus = GetNextStatus(CurrentStatus);
+        CurrentStatus = next;
         UpdateStateHistory(createdBy, notes);
 
         return TransitionResult.Ok();

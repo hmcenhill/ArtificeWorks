@@ -118,6 +118,61 @@ public class ArtificeWorksDbContext : DbContext
                 .HasForeignKey("work_order_id")
                 .IsRequired()
                 .OnDelete(DeleteBehavior.Cascade);
+
+            // ---------------------------------------------------- 13.3: parent/child work orders
+
+            entity.Property(x => x.ParentWorkOrderId)
+                .HasColumnName("parent_work_order_id");
+
+            entity.Property(x => x.ForComponentId)
+                .HasColumnName("for_component_id");
+
+            entity.Property(x => x.ParentAttemptNumber)
+                .HasColumnName("parent_attempt_number");
+
+            entity.Property(x => x.TreeDepth)
+                .HasColumnName("tree_depth")
+                .HasDefaultValue(0)
+                .IsRequired();
+
+            // The self-reference. NoAction rather than Cascade or Restrict, and the choice is
+            // load-bearing:
+            //   * Cascade would let 10.4's sweep retire a held parent and silently delete a child
+            //     that is mid-build — an order vanishing from under a visitor watching it.
+            //   * Restrict is checked row-by-row, so the sweep's single DELETE would fail even when
+            //     it is removing the parent and the child *together*.
+            //   * NoAction is checked at the end of the statement, so a whole terminal tree can be
+            //     retired in one DELETE, and a parent whose child is still live is refused.
+            // The sweep's predicate (WorldRepository) is what makes the refusal unnecessary in
+            // practice; this constraint is what makes it impossible.
+            entity.HasMany(x => x.Children)
+                .WithOne()
+                .HasForeignKey(x => x.ParentWorkOrderId)
+                .OnDelete(DeleteBehavior.NoAction);
+
+            // The component a child order's output is credited to. Components are catalog rows and
+            // are never deleted, so Restrict here only ever means "don't quietly break the link".
+            entity.HasOne<Component>()
+                .WithMany()
+                .HasForeignKey(x => x.ForComponentId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // THE dedupe key for 13.3, by the rule the rest of the schema already follows: the key
+            // follows the thing that must happen once. What must happen once is *one outstanding
+            // request per (parent, parent attempt, component)* — so a redelivered scheduling event
+            // cannot spawn a second child.
+            //
+            // Filtered on live children on purpose. An absolute key would also refuse a parent that
+            // legitimately needs to ask again — its child finished, but another order drew the stock
+            // before the parent re-picked — and would leave it held forever with nothing coming.
+            // Scoping the index to orders that are not yet finished makes it say exactly what is
+            // meant, and lets the system self-correct.
+            entity.HasIndex(x => new { x.ParentWorkOrderId, x.ParentAttemptNumber, x.ForComponentId })
+                .IsUnique()
+                .HasDatabaseName("ux_work_orders_open_sub_assembly_request")
+                .HasFilter(
+                    "parent_work_order_id IS NOT NULL "
+                    + "AND \"CurrentStatus\" NOT IN ('Completed', 'Cancelled')");
         });
 
         modelBuilder.Entity<WorkOrderStateHistory>(entity =>

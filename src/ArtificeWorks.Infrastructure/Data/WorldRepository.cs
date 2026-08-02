@@ -88,11 +88,34 @@ public class WorldRepository : IWorldRepository
     /// lines, production and inspection runs, shipments and their lines all hang off
     /// <c>work_orders</c> with <c>ON DELETE CASCADE</c>, so one delete leaves no orphan behind.
     /// </para>
+    /// <para>
+    /// <strong>A parent with a live child is never retired (13.3), and this is the sharpest edge in
+    /// that story.</strong> A parent held for hours waiting on a sub-assembly is exactly the shape
+    /// this method retires — and retiring it would either cascade-delete a running child or, with
+    /// the <c>NO ACTION</c> constraint the schema actually uses, fail the whole sweep. The
+    /// <c>NOT EXISTS</c> below therefore says something narrower than "has no children": it says
+    /// <em>every</em> child is also being deleted by this same statement. A tree is retired whole or
+    /// not at all, which is what makes the sweep and the foreign key agree with each other rather
+    /// than race.
+    /// </para>
+    /// <para>
+    /// Grandchildren fall out of it: the predicate is evaluated against the statement's own snapshot,
+    /// so a three-level tree whose leaves all qualify matches at every level and goes in one delete.
+    /// A tree with one live order anywhere in it keeps the whole tree, and the next sweep tries again.
+    /// </para>
     /// </summary>
     private Task<int> RetireAsync(DateTime retireBeforeUtc, CancellationToken cancellationToken) =>
         _context.Database.ExecuteSqlAsync($"""
-            DELETE FROM work_orders
-            WHERE "CurrentStatus" IN ('Completed', 'Cancelled', 'OnHold', 'Fault')
-              AND "UpdatedUtc" < {retireBeforeUtc}
+            DELETE FROM work_orders wo
+            WHERE wo."CurrentStatus" IN ('Completed', 'Cancelled', 'OnHold', 'Fault')
+              AND wo."UpdatedUtc" < {retireBeforeUtc}
+              AND NOT EXISTS (
+                  SELECT 1 FROM work_orders child
+                  WHERE child.parent_work_order_id = wo."Id"
+                    AND (
+                        child."CurrentStatus" NOT IN ('Completed', 'Cancelled', 'OnHold', 'Fault')
+                        OR child."UpdatedUtc" >= {retireBeforeUtc}
+                    )
+              )
             """, cancellationToken);
 }

@@ -5,6 +5,7 @@ using ArtificeWorks.Application.Interfaces;
 using ArtificeWorks.Application.Messaging;
 using ArtificeWorks.Application.Messaging.Events;
 using ArtificeWorks.Application.Observability;
+using ArtificeWorks.Application.SubAssemblies;
 using ArtificeWorks.Domain.Models.Materials;
 
 using Microsoft.Extensions.Logging;
@@ -49,6 +50,7 @@ public sealed class MaterialPickingService
     private readonly IEventPublisher _eventPublisher;
     private readonly ArtificeWorksMetrics _metrics;
     private readonly IInjectedFaultRepository? _injectedFaults;
+    private readonly SubAssemblyService? _subAssemblies;
     private readonly ILogger<MaterialPickingService> _logger;
 
     /// <param name="injectedFaults">
@@ -57,6 +59,11 @@ public sealed class MaterialPickingService
     /// be declared unprocessable (poison → parked → dead letter). Null (a unit test, or any host
     /// without chaos wired) means no order is ever broken here.
     /// </param>
+    /// <param name="subAssemblies">
+    /// 13.3's spawn. Null (a unit test of the pick in isolation) means a short made component is
+    /// treated exactly like a short bought one — the order simply holds, which is the behaviour
+    /// every epic before this one had.
+    /// </param>
     public MaterialPickingService(
         IWorkOrderRepository workOrderRepository,
         IProductRepository productRepository,
@@ -64,7 +71,8 @@ public sealed class MaterialPickingService
         IEventPublisher eventPublisher,
         ArtificeWorksMetrics metrics,
         ILogger<MaterialPickingService> logger,
-        IInjectedFaultRepository? injectedFaults = null)
+        IInjectedFaultRepository? injectedFaults = null,
+        SubAssemblyService? subAssemblies = null)
     {
         _workOrderRepository = workOrderRepository;
         _productRepository = productRepository;
@@ -72,6 +80,7 @@ public sealed class MaterialPickingService
         _eventPublisher = eventPublisher;
         _metrics = metrics;
         _injectedFaults = injectedFaults;
+        _subAssemblies = subAssemblies;
         _logger = logger;
     }
 
@@ -177,7 +186,7 @@ public sealed class MaterialPickingService
         {
             ReservationOutcome.Reserved => OnReserved(workOrder, demand, commit.Reservation!),
             ReservationOutcome.InsufficientStock =>
-                await OnShort(workOrder, attemptNumber, commit.ShortComponentIds ?? []),
+                await OnShort(workOrder, attemptNumber, commit.ShortComponents ?? [], product!, cancellationToken),
             ReservationOutcome.AlreadyReserved => AlreadyPicked(workOrderId, attemptNumber, reservedUtc: null),
             _ => throw new InvalidOperationException($"Unhandled reservation outcome {commit.Outcome}.")
         };
@@ -281,10 +290,25 @@ public sealed class MaterialPickingService
         return new PickResult(PickOutcome.Picked, summary, demand);
     }
 
+    /// <summary>
+    /// The pick came up short. Since 13.3 that has two endings rather than one, and which applies is
+    /// decided entirely by whether the missing part is something the factory <em>makes</em>:
+    /// <list type="bullet">
+    ///   <item><description><strong>Bought parts short</strong> — the order goes OnHold with a
+    ///     reason, exactly as it has since 5.3. Unchanged, and still the common case.</description></item>
+    ///   <item><description><strong>A made component short</strong> — a child work order is
+    ///     scheduled for the shortfall, and the parent holds naming what it is waiting for. The
+    ///     child's completion is what releases it.</description></item>
+    /// </list>
+    /// The hold, the children and the events announcing them are one commit: the children were
+    /// attached to the parent's tracked graph, so the save below writes all of it or none of it.
+    /// </summary>
     private async Task<PickResult> OnShort(
         Domain.Models.WorkOrder workOrder,
         int attemptNumber,
-        IReadOnlyList<string> shortComponentIds)
+        IReadOnlyList<ShortComponent> shortages,
+        Product product,
+        CancellationToken cancellationToken)
     {
         // The attempt is named from the rebuild onwards. "Insufficient stock" against an order that
         // is already InProcess with units on the floor reads like a contradiction otherwise — the
@@ -293,20 +317,42 @@ public sealed class MaterialPickingService
             ? "Insufficient stock"
             : $"Insufficient stock for rebuild attempt {attemptNumber}";
 
-        var summary = shortComponentIds.Count == 0
+        var summary = shortages.Count == 0
             ? $"{scope}; no materials reserved."
-            : $"{scope}: {string.Join(", ", shortComponentIds)}; no materials reserved.";
+            : $"{scope}: {string.Join(", ", shortages.Select(shortage => shortage.ComponentId))}; "
+              + "no materials reserved.";
 
         _metrics.Pick("insufficient_stock");
 
-        // Nothing was drawn — the reservation transaction rolled back — so the order simply
-        // waits. Releasing the hold (once stock arrives) re-runs picking in a later epic;
-        // for now a human releases it via the existing endpoint.
+        // Planned, not committed: the children are built in memory and their announcements staged,
+        // so the hold below can name what the order is waiting for *before* anything is written.
+        var plan = _subAssemblies is null
+            ? SubAssemblyPlan.Nothing("Sub-assembly scheduling is not wired into this host.")
+            : await _subAssemblies.PlanForShortages(
+                workOrder, attemptNumber, shortages, product.BillOfMaterials, cancellationToken);
+
+        if (plan.Outcome == SubAssemblyRequestOutcome.TooDeep)
+        {
+            // The chain has run as deep as it is allowed to. Faulting is the honest ending: the
+            // catalog is wrong, no amount of waiting fixes it, and an order held forever is a
+            // stall that looks like a bug. 13.2 refuses the same shape on the read side.
+            return await OnTooDeep(workOrder, plan.Summary);
+        }
+
+        // Nothing was drawn — the reservation transaction rolled back — so the order simply waits.
+        // What it waits *for* is the only thing 13.3 changed here.
+        if (plan.Outcome is SubAssemblyRequestOutcome.Requested or SubAssemblyRequestOutcome.AlreadyRequested)
+        {
+            summary = $"{summary} Waiting on sub-assembly: {plan.Summary}";
+        }
+
         var from = workOrder.CurrentStatus;
         var hold = workOrder.SetHold(Author, Truncate(summary));
         if (!hold.Success)
         {
-            // e.g. the order was already held or cancelled between scheduling and picking.
+            // e.g. the order was already held or cancelled between scheduling and picking. A parent
+            // re-picking after a sibling released it and finding a second component still short
+            // lands here too.
             _logger.LogWarning(
                 "Work order {WorkOrderId} was short of stock but could not be held ({Code}): {Error}",
                 workOrder.Id, hold.Code, hold.Error);
@@ -320,8 +366,42 @@ public sealed class MaterialPickingService
             _logger.LogWarning("Work order {WorkOrderId} placed OnHold: {Reason}", workOrder.Id, summary);
         }
 
+        // ONE save for the hold, the children and the outbox rows announcing them. The children were
+        // attached to the parent's tracked graph by WorkOrder.ForSubAssembly, so they are already in
+        // this unit of work — there is no state where a parent is held with nobody building for it,
+        // and none where a child exists that nothing announced. With no children this is byte for
+        // byte the Update the short path has always done.
         await _workOrderRepository.Update(workOrder);
+        _subAssemblies?.RecordPlanOutcome(workOrder, plan);
+
         return new PickResult(PickOutcome.InsufficientStock, summary);
+    }
+
+    /// <summary>
+    /// The sub-assembly chain has reached its depth limit (13.3). Combined with 13.2's cycle
+    /// refusal, this is the guard that stops a bad catalog from generating work forever — so the
+    /// order stops here with a reason a person can read, rather than waiting for a part nothing is
+    /// scheduled to build.
+    /// </summary>
+    private async Task<PickResult> OnTooDeep(Domain.Models.WorkOrder workOrder, string reason)
+    {
+        var from = workOrder.CurrentStatus;
+        var faulted = workOrder.Fault(Author, Truncate(reason));
+
+        if (!faulted.Success)
+        {
+            _logger.LogWarning(
+                "Work order {WorkOrderId} exceeded the sub-assembly depth limit but could not be faulted "
+                + "({Code}): {Error}", workOrder.Id, faulted.Code, faulted.Error);
+        }
+        else
+        {
+            _metrics.Transition(from.ToString(), workOrder.CurrentStatus.ToString(), workOrder.Origin.ToString());
+            _logger.LogError("Work order {WorkOrderId} FAULTED: {Reason}", workOrder.Id, reason);
+        }
+
+        await _workOrderRepository.Update(workOrder);
+        return new PickResult(PickOutcome.InsufficientStock, reason);
     }
 
     /// <summary>

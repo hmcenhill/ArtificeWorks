@@ -94,6 +94,12 @@ public static class ProblemCodes
     /// </summary>
     public const string ChaosRateLimited = "chaos_rate_limited";
 
+    /// <summary>
+    /// The order has live child work orders building sub-assemblies for it (13.3) and cannot be
+    /// shipped or completed until they finish. A 409: the request is fine, the order's state isn't.
+    /// </summary>
+    public const string ChildrenOutstanding = "children_outstanding";
+
     /// <summary>Maps a domain transition-rejection code onto its wire reason code.</summary>
     public static string ForTransition(TransitionErrorCode code) => code switch
     {
@@ -104,6 +110,7 @@ public static class ProblemCodes
         TransitionErrorCode.InvalidTransition => InvalidTransition,
         TransitionErrorCode.AttemptOutOfSequence => AttemptOutOfSequence,
         TransitionErrorCode.AlreadyInspected => UnitAlreadyInspected,
+        TransitionErrorCode.ChildrenOutstanding => ChildrenOutstanding,
         _ => InternalError
     };
 }

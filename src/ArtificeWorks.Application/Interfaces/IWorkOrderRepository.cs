@@ -28,4 +28,23 @@ public interface IWorkOrderRepository
         IReadOnlyCollection<WorkOrderStatus> statuses,
         IReadOnlyCollection<WorkOrderOrigin> origins,
         int limit);
+
+    // ------------------------------------------------------------ 13.3: sub-assembly work orders
+
+    /// <summary>
+    /// The components for which this parent already has an <em>unfinished</em> child order on the
+    /// given pick attempt. The cheap pre-check that stops a redelivery from even trying to spawn a
+    /// second one; as everywhere else in this system, the filtered unique index is the guarantee.
+    /// <para>
+    /// <strong>There is deliberately no "add a child" method beside it.</strong> A child is attached
+    /// to its parent's <c>Children</c> collection by <see cref="WorkOrder.ForSubAssembly"/>, so it is
+    /// already in the caller's tracked graph and <see cref="Update"/> commits it alongside the
+    /// parent's hold and the outbox rows announcing it. A dedicated insert would be a second write
+    /// that could drift from the hold it belongs with.
+    /// </para>
+    /// </summary>
+    Task<IReadOnlyList<string>> ListOpenSubAssemblyRequests(
+        Guid parentWorkOrderId,
+        int parentAttemptNumber,
+        CancellationToken cancellationToken = default);
 }

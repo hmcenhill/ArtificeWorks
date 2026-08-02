@@ -137,6 +137,12 @@ public class ChaosTests
             IReadOnlyCollection<WorkOrderOrigin> origins,
             int limit)
             => Task.FromResult<IReadOnlyList<WorkOrderListItemDto>>([]);
+
+        // 13.3's addition. Nothing in a chaos unit test reaches it; it answers like an empty
+        // factory so that if anything ever does, it gets a result rather than an exception.
+        public Task<IReadOnlyList<string>> ListOpenSubAssemblyRequests(
+            Guid parentWorkOrderId, int parentAttemptNumber, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<string>>([]);
     }
 
     private sealed class EmptyWorkOrderRepository : IWorkOrderRepository
@@ -150,5 +156,11 @@ public class ChaosTests
             IReadOnlyCollection<WorkOrderOrigin> origins,
             int limit)
             => Task.FromResult<IReadOnlyList<WorkOrderListItemDto>>([]);
+
+        // 13.3's addition. Nothing in a chaos unit test reaches it; it answers like an empty
+        // factory so that if anything ever does, it gets a result rather than an exception.
+        public Task<IReadOnlyList<string>> ListOpenSubAssemblyRequests(
+            Guid parentWorkOrderId, int parentAttemptNumber, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<string>>([]);
     }
 }

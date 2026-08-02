@@ -195,7 +195,7 @@ public class RetryLadderTests : IAsyncLifetime
     {
         var envelope = new EventEnvelope<WorkOrderScheduled>(
             Guid.NewGuid(), "work-order.scheduled", 1, Guid.NewGuid(), DateTime.UtcNow,
-            new WorkOrderScheduled(workOrderId, "PRD-RETRY", "Retry Automaton", 1, DateTime.UtcNow));
+            new WorkOrderScheduled(workOrderId, "PRD-RETRY", "Retry Automaton", 1, 1, DateTime.UtcNow));
 
         return PublishRaw("work-order.scheduled",
             JsonSerializer.Serialize(envelope, new JsonSerializerOptions(JsonSerializerDefaults.Web)));

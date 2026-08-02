@@ -31,5 +31,13 @@ public enum TransitionErrorCode
     AttemptOutOfSequence,
 
     /// <summary>The serialized unit already carries a verdict and cannot be inspected again.</summary>
-    AlreadyInspected
+    AlreadyInspected,
+
+    /// <summary>
+    /// The order has child work orders still building sub-assemblies for it (13.3), so it cannot
+    /// ship or complete yet. In normal flow this never fires — a parent waiting on a child is held
+    /// at picking, several stages earlier — which is exactly why it exists: it is the guard that
+    /// catches the bug the pipeline did not foresee.
+    /// </summary>
+    ChildrenOutstanding
 }

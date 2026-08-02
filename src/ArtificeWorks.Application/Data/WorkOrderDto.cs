@@ -33,10 +33,36 @@ public class WorkOrderDto
     /// </summary>
     public ShipmentDto? Shipment { get; set; }
 
+    /// <summary>
+    /// The order this one is building a sub-assembly for (13.3), or null for a top-level order.
+    /// Paired with <see cref="Children"/>, this is what lets the detail view link the two
+    /// directions — a child says what it is made for, a parent says what it is waiting on.
+    /// </summary>
+    public Guid? ParentWorkOrderId { get; set; }
+
+    /// <summary>The component a child order's finished units are credited to. Null for a top-level order.</summary>
+    public string? ForComponentId { get; set; }
+
+    /// <summary>
+    /// The sub-assembly orders spawned for this one, newest last. Empty for the overwhelming
+    /// majority of orders, which is why the board's list DTO carries only a flag.
+    /// </summary>
+    public List<SubAssemblyChildDto> Children { get; set; } = [];
+
+    /// <summary>How many of <see cref="Children"/> have not finished — what the order is waiting on.</summary>
+    public int LiveChildCount { get; set; }
+
     public WorkOrderDto() { }
     public WorkOrderDto(WorkOrder workOrder, Shipment? shipment = null)
     {
         Shipment = shipment is null ? null : new ShipmentDto(shipment);
+        ParentWorkOrderId = workOrder.ParentWorkOrderId;
+        ForComponentId = workOrder.ForComponentId;
+        LiveChildCount = workOrder.LiveChildCount;
+        Children = workOrder.Children
+            .OrderBy(child => child.CreatedUtc)
+            .Select(child => new SubAssemblyChildDto(child))
+            .ToList();
         Id = workOrder.Id;
         Status = workOrder.CurrentStatus;
         OrderedItemId = workOrder.OrderedItem.ItemId;
@@ -75,6 +101,37 @@ public class ShipmentDto
         EstimatedArrivalUtc = shipment.EstimatedArrivalUtc;
         DispatchedUtc = shipment.DispatchedUtc;
         SerialNumbers = shipment.Lines.Select(line => line.SerialNumber).ToList();
+    }
+}
+
+/// <summary>
+/// One sub-assembly order, as its parent sees it (13.3): enough to draw a link and say whether it
+/// is still running. Deliberately not a whole <see cref="WorkOrderDto"/> — the child is an ordinary
+/// order with its own detail page, and nesting the full graph would make a parent's response carry
+/// every unit of every child.
+/// </summary>
+public class SubAssemblyChildDto
+{
+    public Guid Id { get; set; }
+    public WorkOrderStatus Status { get; set; }
+
+    /// <summary>The component this child is making.</summary>
+    public string? ForComponentId { get; set; }
+
+    /// <summary>How many units of that component it was raised to build.</summary>
+    public uint Qty { get; set; }
+
+    /// <summary>False once the child is Completed or Cancelled — the parent is no longer waiting on it.</summary>
+    public bool IsLive { get; set; }
+
+    public SubAssemblyChildDto() { }
+    public SubAssemblyChildDto(WorkOrder child)
+    {
+        Id = child.Id;
+        Status = child.CurrentStatus;
+        ForComponentId = child.ForComponentId;
+        Qty = child.OrderItemQty;
+        IsLive = !child.IsTerminal;
     }
 }
 

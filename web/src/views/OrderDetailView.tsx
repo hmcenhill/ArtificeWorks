@@ -5,6 +5,7 @@ import { ApiError, fetchTimeline, fetchWorkOrder } from "../api/client";
 import type { TimelineEntry, TimelineKind, WorkOrder, WorkOrderTimeline } from "../api/types";
 import { ChaosPanel } from "../components/ChaosPanel";
 import { OrderActions } from "../components/OrderActions";
+import { SubAssemblyPanel } from "../components/SubAssemblyPanel";
 import { useLiveData } from "../hooks/useLiveData";
 import { useReloadOnStream } from "../hooks/useReloadOnStream";
 import { absoluteTime, relativeTime } from "../util/time";
@@ -68,6 +69,7 @@ export function OrderDetailView() {
         <DetailError error={error} onRetry={reloadBoth} />
       ) : (
         <>
+          {order && <SubAssemblyPanel order={order} />}
           {order && <OrderActions order={order} onActed={reloadBoth} />}
           {order && <ChaosPanel order={order} />}
           <TimelineBody timeline={data!} />

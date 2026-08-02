@@ -93,6 +93,50 @@ really does take its components with it.
   to replay it — silence is the failure mode Epic 8 removed — which does mean `dead_letters` grows
   unboundedly if nobody looks.
 
+### The domain
+
+- **A child work order is an ordinary work order** (13.3). When a pick is short of a component the
+  factory *makes*, it schedules the sub-assembly rather than only waiting for one. There is no
+  `SubAssemblyOrder` type, no second table and no parallel state machine — four columns on
+  `work_orders` (`parent_work_order_id`, `for_component_id`, `parent_attempt_number`, `tree_depth`)
+  are the whole difference, and three of them are nullable. Everything the pipeline, the board, the
+  timeline, the metrics and the chaos panel do for an order, they do for a child for free. That is
+  the reason work begetting work cost one story rather than an epic.
+- **A child hands back *stock*, not units.** At `inspection-passed` an order with a parent goes to
+  **putaway** instead of to a carrier: its passed quantity credits `components.on_hand` and the
+  parent re-picks through the ordinary atomic conditional decrement. No second reservation kind, no
+  link between a serialized unit and a parent's materials, no new concurrency story. The cost, stated
+  plainly: a made component is fungible, so you cannot trace *which* control stack went into *which*
+  Courier. Per-unit pedigree is a real manufacturing concept and a later story.
+- **A parent waits with the machinery that already makes orders wait.** OnHold with a reason naming
+  what it is waiting for — not a new status, which would cost a domain enum value, a migration, a
+  board column, `stages.ts`, a metric dimension and every switch that fans out over status, to say
+  what the reason string already says. The child's `work-order.completed` releases it, so the gate is
+  event-driven rather than a poll.
+- **The parent's retry is a re-pick, not a resume.** Releasing the hold republishes
+  `work-order.scheduled` carrying the attempt and the outstanding quantity, because the pick that
+  failed was all-or-nothing and drew nothing — there is no partial state to reconstruct and no new
+  verb. A parent waiting on several children is released by the first to finish, re-picks, finds the
+  next component short, sees a live child for it and holds again. Self-correcting, and it needs no
+  "am I still waiting on anyone?" query.
+- **A parent cannot ship or complete while it has live children**, guarded in `WorkOrder` itself and
+  not merely implied by the pipeline holding it at picking. Both read paths on the repository load
+  the children, because a guard that silently passes when nobody loaded the data is not a guard. A
+  *faulted* child still counts as live: it is stuck, not done.
+- **Depth is capped and cycles are refused, and this is the one runaway risk in the domain.** A bill
+  of materials that reaches itself is an infinite child-order generator pointed at a shared world
+  with no auth. `WorkOrder.MaxSubAssemblyDepth` *is* `BomExplosion.MaxDepth` — one constant, so the
+  read side's cap and the write side's cap cannot disagree — and an order at the limit routes to
+  **Fault** with an honest reason rather than spawning. 13.2's explosion refuses a cycle by tracking
+  the *path* rather than a visited set, which is also what lets a diamond aggregate into one leaf row.
+- **The world sweep retires a tree whole or not at all** (13.3's sharpest edge). A parent held for
+  hours waiting on a child is exactly the shape 10.4 retires, and retiring it would leave a child
+  building parts for nobody. The retire predicate deletes an order only when every child of it is
+  *also* being deleted by the same statement, and the self-referencing foreign key is `NO ACTION`
+  (checked at end of statement) rather than `CASCADE` (would silently delete a running order) or
+  `RESTRICT` (checked per row, so it would fail the sweep even for a legitimate whole-tree delete).
+  The predicate and the constraint say the same thing from two directions.
+
 ### Simulation & tuning
 
 - **Pacing is quantized and applied only in the outbox dispatcher.** A stage's duration snaps to the
@@ -157,12 +201,19 @@ really does take its components with it.
 
 ## Known simplifications (deliberate, revisited later)
 
-- **A rebuild held short of parts is a dead end until someone releases it** (13.1). An order that
-  cannot be supplied for attempt N goes OnHold with the attempt named in the reason and draws
-  nothing, exactly as attempt 1 does — but a release re-triggers nothing (see the next entry), so it
-  waits for a human or for the world sweep to retire it. Widening release into a general "resume
-  whatever you were doing" is a real design question deferred to whoever needs it; 13.3 will want it
-  phrased as "a parent whose child finished", not as a release hook.
+- **An order held short of *bought* parts is still a dead end until someone releases it** (13.1,
+  narrowed by 13.3). An order that cannot be supplied for attempt N goes OnHold with the attempt
+  named in the reason and draws nothing — and a release re-triggers nothing (see the next entry), so
+  it waits for a human or for the world sweep. 13.3 answered exactly half of this: a shortage of a
+  component the factory *makes* is no longer a dead end, because the child's completion re-schedules
+  the parent. That resumption is deliberately phrased as "a parent whose child finished", **not** as
+  a release hook — a visitor releasing a held order by hand still re-triggers nothing outside
+  Delivery. Widening release into a general "resume whatever you were doing" remains deferred.
+- **A made component is fungible; there is no per-unit pedigree** (13.3). A child order credits stock
+  and the parent draws stock, so nothing records which sub-assembly went into which finished
+  automaton. Tracing that is a genuine manufacturing concept and a genuine future story; it would
+  need a reservation kind that binds a serialized unit to a parent, which is precisely the complexity
+  the "stock, not allocation" decision bought its way out of.
 - **Release re-triggers exactly one thing, and only at Delivery** (Epic 7). A release that lands in
   Delivery *with no shipment* republishes `InspectionPassed`; every other release is inert. The
   simulation never releases a hold, so refusal stays uncapped and the world sweep retires whatever

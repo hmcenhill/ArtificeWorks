@@ -45,10 +45,27 @@ public sealed class WorkOrderScheduledHandler : IIntegrationEventHandler<WorkOrd
         // API → picking → production.
         _correlation.CorrelationId = envelope.CorrelationId;
 
-        var result = await _picking.PickMaterials(envelope.Payload.WorkOrderId, cancellationToken);
+        // Both taken from the payload, never re-read off the order — the rule 6.4 set and 13.1
+        // extended to picking. Since 13.3 this key has two publishers and they mean different
+        // things by it: a new order asks for attempt 1 and everything it ordered; a parent released
+        // by its finished sub-assembly asks for the attempt its short pick was buying for and only
+        // what it still owes. The handler must not have to tell them apart.
+        //
+        // The floor is a compatibility repair, not a re-derivation: a `scheduled` message staged
+        // before this field existed deserializes it as 0, which is not an attempt at all.
+        var attemptNumber = envelope.Payload.AttemptNumber > 0
+            ? envelope.Payload.AttemptNumber
+            : MaterialPickingService.InitialAttempt;
+
+        var result = await _picking.PickMaterials(
+            envelope.Payload.WorkOrderId,
+            attemptNumber,
+            envelope.Payload.Quantity,
+            cancellationToken);
 
         _logger.LogInformation(
-            "Picking for work order {WorkOrderId} from {EventType} ({EventId}): {Outcome} — {Summary}",
-            envelope.Payload.WorkOrderId, envelope.EventType, envelope.EventId, result.Outcome, result.Summary);
+            "Picking attempt {Attempt} for work order {WorkOrderId} from {EventType} ({EventId}): {Outcome} — {Summary}",
+            attemptNumber, envelope.Payload.WorkOrderId, envelope.EventType, envelope.EventId,
+            result.Outcome, result.Summary);
     }
 }
